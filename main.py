@@ -15,6 +15,7 @@ db_config = {
 }
 
 db_manager = DatabaseManager(**db_config)
+# db_manager.migrate_tables()
 db_manager.create_tables()
 
 scheduler = Scheduler(db_config)
@@ -22,5 +23,5 @@ scheduler.start()
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    ex = AccreditationApp()
+    ex = AccreditationApp(db_manager)
     sys.exit(app.exec_())
