@@ -102,6 +102,25 @@ class DatabaseManager:
         )
         self.connection.commit()
 
+    def get_person_id(self, fio, birth_date):
+        """
+        Ищет идентификатор пользователя по ФИО и дате рождения.
+        """
+        try:
+            surname, name, middle_name = fio.split(' ')
+            self.cursor.execute(
+                """
+                SELECT id FROM accredited
+                WHERE surname = %s AND name = %s AND middle_name = %s AND birth_date = %s;
+                """,
+                (surname, name, middle_name, birth_date)
+            )
+            result = self.cursor.fetchone()
+            return result[0] if result else None
+        except Exception as e:
+            print(f"Ошибка при поиске пользователя в базе данных: {e}")
+            return None
+
 
 
     def close(self):

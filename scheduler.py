@@ -19,12 +19,13 @@ class Scheduler:
 
             data = [
                 {
-                    "ФИО": f"{p[1]} {p[2]} {p[3]}",
+                    "ФИО": f"{p[1]} {p[2]} {p[3] if p[3] else ''}".strip(),
                     "Дата рождения": p[4].strftime('%d.%m.%Y'),
                     "Срок аккредитации истёк": p[5].strftime('%d.%m.%Y')
                 }
                 for p in people_for_recheck
             ]
+
             df = pd.DataFrame(data)
             self.file_manager.saveFile(df, file_name)
 
@@ -32,7 +33,7 @@ class Scheduler:
                 self.db_manager.log_transaction(person[0], "Generated Recheck File")
 
     def start(self):
-        self.scheduler.add_job(self.generate_recheck_file, "cron", day_of_week="tue,thu", hour=10)
+        self.scheduler.add_job(self.generate_recheck_file, "cron", day_of_week="tue", hour=10)
         self.scheduler.start()
 
     def stop(self):

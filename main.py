@@ -23,5 +23,11 @@ scheduler.start()
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    ex = AccreditationApp(db_manager)
+
+    db_manager = DatabaseManager(**db_config)
+    db_manager.create_tables()  # Убедитесь, что таблицы созданы
+
+    ex = AccreditationApp(db_manager)  # Создаем главное окно
+    ex.show()  # Показываем окно
+
     sys.exit(app.exec_())
