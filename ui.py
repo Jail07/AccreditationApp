@@ -81,8 +81,8 @@ class AccreditationApp(QWidget):
 
     def displayTable(self):
         """
-            Заполняет таблицу содержимым DataFrame.
-            """
+        Отображает содержимое DataFrame в QTableWidget.
+        """
         self.tableWidget.setRowCount(len(self.df))
         self.tableWidget.setColumnCount(len(self.df.columns))
         self.tableWidget.setHorizontalHeaderLabels(self.df.columns)
@@ -104,17 +104,13 @@ class AccreditationApp(QWidget):
         try:
             # Этап 1: Нормализация данных
             try:
-                self.df = self.processor.cleanData(self.df)  # Удаление пробелов, нормализация дат
+                self.df = self.processor.cleanData(self.df)  # Нормализация строк и дат
                 self.logMessage("Данные нормализованы.")
+                self.displayTable()  # Обновляем таблицу
             except Exception as e:
                 self.logMessage(f"Ошибка нормализации данных: {e}")
                 return
 
-            # Удаляем строки с некорректными датами (раньше 1900 года)
-            if 'Дата рождения' in self.df.columns:
-                self.df = self.df[
-                    self.df['Дата рождения'].apply(lambda x: pd.notna(x) and int(x.split('.')[-1]) >= 1900)]
-                self.logMessage("Удалены строки с датами рождения до 1900 года.")
 
             # Этап 2: Проверка на наличие обязательных данных
             required_columns = ['Фамилия', 'Имя', 'Отчество', 'Дата рождения', 'Место рождения', 'Регистрация',
@@ -125,14 +121,19 @@ class AccreditationApp(QWidget):
                 missing_columns = [col for col in required_columns if pd.isna(self.df.at[i, col])]
                 if missing_columns:
                     missing_data_info[i] = missing_columns
+                    self.df.at[i, 'Статус'] = f"Отсутствуют: {', '.join(missing_columns)}"  # Записываем статус
 
             # Логируем строки с отсутствующими данными
             for i, missing_columns in missing_data_info.items():
                 self.logMessage(f"Строка {i + 1}: отсутствуют обязательные поля: {', '.join(missing_columns)}")
 
+            # Обновляем таблицу после проверки обязательных данных
+            self.displayTable()
+
             # Этап 3: Проверка на дублирование в файле
             try:
-                self.df = self.processor.checkDuplicates(self.df)
+                self.df = self.processor.checkDuplicates(self.df)  # Обновляем DataFrame
+                self.displayTable()  # Синхронизируем таблицу
             except Exception as e:
                 self.logMessage(f"Ошибка проверки на дублирование: {e}")
                 return
@@ -149,20 +150,29 @@ class AccreditationApp(QWidget):
 
                 if self.db_manager.find_matches(surname, name, middle_name, birth_date, organization):
                     db_duplicate_indices.append(i)
+                    self.df.at[i, 'Статус'] = "Дубликат в БД"  # Добавляем статус
+
+            # Обновляем таблицу после проверки дубликатов в БД
+            self.displayTable()
 
             # Этап 5: Проверка подозрительных последовательностей дат
             suspicious_indices = []
             if 'Дата рождения' in self.df.columns:
                 try:
                     suspicious_indices = self.processor.detectSequentialDates(self.df, 'Дата рождения')
+                    for idx in suspicious_indices:
+                        self.df.at[idx, 'Статус'] = "Подозрительная дата"  # Обновляем статус
                 except Exception as e:
                     self.logMessage(f"Ошибка проверки последовательности дат: {e}")
+
+            self.displayTable()  # Обновляем таблицу после проверки последовательностей
 
             # Этап 6: Цветовая маркировка
             for i in self.df.index:
                 color = None
+                status = self.df.at[i, 'Статус']
                 if i in missing_data_info:
-                    color = QColor(255, 165, 0)  # Оранжевый: отсутствуют обязательные данные
+                    color = QColor(255, 165, 0)  # Оранжевый: отсутствуют данные
                 elif self.df.at[i, 'Повтор']:
                     color = QColor(255, 0, 0)  # Красный: дублирование в файле
                 elif i in db_duplicate_indices:
@@ -178,6 +188,7 @@ class AccreditationApp(QWidget):
                     item.setBackground(color)
                     self.tableWidget.setItem(i, j, item)
 
+
             self.uploadButton.setEnabled(True)  # Активируем кнопку добавления в БД
         except Exception as e:
             self.logMessage(f"Ошибка проверки данных: {e}")
@@ -190,7 +201,7 @@ class AccreditationApp(QWidget):
         try:
             added_count = 0
             for index, row in self.df.iterrows():
-                if row.get('Добавлено', False):  # Только строки со статусом "Добавлено"
+                if row.get('Добавлено', True):  # Только строки со статусом "Добавлено"
                     self.db_manager.save_valid_data([row.to_dict()])
                     added_count += 1
 
@@ -263,6 +274,9 @@ class AccreditationApp(QWidget):
             self.logMessage(f"Ошибка сохранения файла: {e}")
 
     def addToBlacklist(self):
+        """
+        Добавляет выбранного пользователя в черный список.
+        """
         try:
             selected_row = self.tableWidget.currentRow()
             if selected_row != -1:
@@ -270,13 +284,18 @@ class AccreditationApp(QWidget):
                 name = self.tableWidget.item(selected_row, 1).text()
                 middle_name = self.tableWidget.item(selected_row, 2).text() or ""
                 birth_date = self.tableWidget.item(selected_row, 3).text()
+                birth_place = self.tableWidget.item(selected_row, 4).text()
+                registration = self.tableWidget.item(selected_row, 5).text()
+                organization = self.tableWidget.item(selected_row, 6).text()
+                position = self.tableWidget.item(selected_row, 7).text()
 
-                person_id = self.db_manager.get_person_id(f"{surname} {name} {middle_name}".strip(), birth_date)
-                if person_id:
-                    self.db_manager.move_to_blacklist(person_id)
-                    self.logMessage(f"{surname} {name} {middle_name} добавлен в черный список.")
-                else:
-                    self.logMessage(f"Пользователь {surname} {name} {middle_name} не найден в базе данных.")
+                self.db_manager.add_person_to_blacklist(
+                    surname, name, middle_name, birth_date, birth_place, registration, organization, position
+                )
+                self.logMessage(f"{surname} {name} {middle_name} добавлен в черный список.")
+            else:
+                self.logMessage("Ошибка: Не выбрана строка для добавления в черный список.")
         except Exception as e:
             self.logMessage(f"Ошибка добавления в черный список: {e}")
+
 

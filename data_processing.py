@@ -52,7 +52,7 @@ class DataProcessor:
                 if df[col].dtype == 'object' or isinstance(df[col].iloc[0], str):
                     df[col] = df[col].apply(lambda x: self.removeExtraSpaces(str(x)) if pd.notna(x) else None)
 
-                # Приведение дат к единому формату
+                # Приведение дат к единому формату и удаление некорректных
                 if col == 'Дата рождения':
                     df[col] = df[col].apply(lambda x: self.normalizeDate(x) if pd.notna(x) else None)
 
@@ -87,7 +87,7 @@ class DataProcessor:
             date_obj = pd.to_datetime(date_str, errors='coerce', dayfirst=True)
             if pd.notna(date_obj) and date_obj.year >= 1900:
                 return date_obj.strftime('%d.%m.%Y')
-            return None
+            return None  # Если дата некорректна, возвращаем None
         except Exception as e:
             print(f"Ошибка нормализации даты: {e}")
             return None

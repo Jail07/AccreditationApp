@@ -47,41 +47,54 @@ class DatabaseManager:
             self.connection.rollback()  # Откатываем изменения при ошибке
             print(f"Ошибка при создании таблиц: {e}")
 
-
     def add_person(self, surname, name, middle_name, birth_date, birth_place, registration, organization, position):
-        accreditation_end_date = datetime.now() + timedelta(days=180)
-        self.cursor.execute("""
-        INSERT INTO accredited (surname, name, middle_name, birth_date, birth_place, registration, organization, 
-                                position, last_check_date, accreditation_end_date)
-        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
-        """, (surname, name, middle_name, birth_date, birth_place, registration, organization, position,
-              datetime.now(), accreditation_end_date))
-        self.connection.commit()
+        try:
+            accreditation_end_date = datetime.now() + timedelta(days=180)
+            self.cursor.execute("""
+            INSERT INTO accredited (surname, name, middle_name, birth_date, birth_place, registration, organization, 
+                                    position, last_check_date, accreditation_end_date)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
+            """, (surname, name, middle_name, birth_date, birth_place, registration, organization, position,
+                  datetime.now(), accreditation_end_date))
+            self.connection.commit()
+        except Exception as e:
+            self.connection.rollback()  # Откат транзакции
+            print(f"Ошибка при добавлении сотрудника: {e}")
 
     def find_matches(self, surname, name, middle_name, birth_date, organization):
         """
         Проверяет, существует ли сотрудник в базе данных.
         """
-        self.cursor.execute("""
-        SELECT id FROM accredited
-        WHERE surname = %s AND name = %s AND middle_name = %s AND birth_date = %s AND organization = %s;
-        """, (surname, name, middle_name, birth_date, organization))
-        return self.cursor.fetchone() is not None
+        try:
+            self.cursor.execute("""
+            SELECT id FROM accredited
+            WHERE surname = %s AND name = %s AND middle_name = %s AND birth_date = %s AND organization = %s;
+            """, (surname, name, middle_name, birth_date, organization))
+            return self.cursor.fetchone() is not None
+        except Exception as e:
+            print(f"Ошибка при поиске сотрудника: {e}")
+            self.connection.rollback()  # Откат транзакции при ошибке
+            return False
 
     def save_valid_data(self, data):
         for row in data:
-            surname = row.get('Фамилия')
-            name = row.get('Имя')
-            middle_name = row.get('Отчество')
-            birth_date = row.get('Дата рождения')
-            birth_place = row.get('Место рождения')
-            registration = row.get('Регистрация')
-            organization = row.get('Организация')
-            position = row.get('Должность')
+            try:
+                surname = row.get('Фамилия')
+                name = row.get('Имя')
+                middle_name = row.get('Отчество')
+                birth_date = row.get('Дата рождения')
+                birth_place = row.get('Место рождения')
+                registration = row.get('Регистрация')
+                organization = row.get('Организация')
+                position = row.get('Должность')
 
-            if surname and name and birth_date and organization:
-                if not self.find_matches(surname, name, middle_name, birth_date, organization):
-                    self.add_person(surname, name, middle_name, birth_date, birth_place, registration, organization, position)
+                if surname and name and birth_date and organization:
+                    if not self.find_matches(surname, name, middle_name, birth_date, organization):
+                        self.add_person(surname, name, middle_name, birth_date, birth_place, registration, organization,
+                                        position)
+            except Exception as e:
+                print(f"Ошибка при сохранении строки: {e}")
+                self.connection.rollback()  # Откат транзакции
 
     def get_people_for_recheck(self):
         query = """
@@ -93,21 +106,27 @@ class DatabaseManager:
         return self.cursor.fetchall()
 
     def log_transaction(self, accredited_id, operation_type):
-        self.cursor.execute(
-            """
+        try:
+            self.cursor.execute("""
             INSERT INTO transactions (accredited_id, operation_type)
             VALUES (%s, %s);
-            """,
-            (accredited_id, operation_type)
-        )
-        self.connection.commit()
+            """, (accredited_id, operation_type))
+            self.connection.commit()
+        except Exception as e:
+            self.connection.rollback()  # Откат транзакции
+            print(f"Ошибка при записи транзакции: {e}")
 
     def get_person_id(self, fio, birth_date):
         """
         Ищет идентификатор пользователя по ФИО и дате рождения.
         """
         try:
-            surname, name, middle_name = fio.split(' ')
+            fio_parts = fio.split(' ')
+            if len(fio_parts) != 3:
+                print(f"Ошибка: ФИО должно содержать Фамилию, Имя и Отчество. Получено: {fio}")
+                return None
+
+            surname, name, middle_name = fio_parts
             self.cursor.execute(
                 """
                 SELECT id FROM accredited
@@ -119,9 +138,45 @@ class DatabaseManager:
             return result[0] if result else None
         except Exception as e:
             print(f"Ошибка при поиске пользователя в базе данных: {e}")
+            self.connection.rollback()
             return None
 
+    def add_person_to_blacklist(self, surname, name, middle_name, birth_date, birth_place, registration, organization,
+                                position):
+        """
+        Добавляет пользователя в черный список.
+        Если пользователь уже существует, обновляет флаг "blacklist".
+        Если пользователь не существует, создает новую запись с флагом "blacklist = TRUE".
+        """
+        try:
+            # Ищем пользователя в БД
+            person_id = self.get_person_id(f"{surname} {name} {middle_name}", birth_date)
 
+            if person_id:
+                # Если пользователь существует, обновляем флаг "blacklist"
+                self.cursor.execute("""
+                UPDATE accredited
+                SET blacklist = TRUE
+                WHERE id = %s;
+                """, (person_id,))
+                self.log_transaction(person_id, "Added to Blacklist")
+            else:
+                # Если пользователь не существует, создаем новую запись с флагом "blacklist"
+                accreditation_end_date = datetime.now() + timedelta(days=180)
+                self.cursor.execute("""
+                INSERT INTO accredited (surname, name, middle_name, birth_date, birth_place, registration, organization, 
+                                        position, last_check_date, accreditation_end_date, blacklist)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, TRUE);
+                """, (surname, name, middle_name, birth_date, birth_place, registration, organization, position,
+                      datetime.now(), accreditation_end_date))
+                person_id = self.cursor.fetchone()[0]
+                self.log_transaction(person_id, "Added to Blacklist")
+
+            self.connection.commit()
+            print(f"Пользователь {surname} {name} {middle_name} успешно добавлен в черный список.")
+        except Exception as e:
+            self.connection.rollback()
+            print(f"Ошибка при добавлении в черный список: {e}")
 
     def close(self):
         self.cursor.close()

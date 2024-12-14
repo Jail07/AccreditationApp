@@ -15,7 +15,6 @@ db_config = {
 }
 
 db_manager = DatabaseManager(**db_config)
-# db_manager.migrate_tables()
 db_manager.create_tables()
 
 scheduler = Scheduler(db_config)
@@ -24,8 +23,6 @@ scheduler.start()
 if __name__ == "__main__":
     app = QApplication(sys.argv)
 
-    db_manager = DatabaseManager(**db_config)
-    db_manager.create_tables()  # Убедитесь, что таблицы созданы
 
     ex = AccreditationApp(db_manager)  # Создаем главное окно
     ex.show()  # Показываем окно
