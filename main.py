@@ -17,8 +17,8 @@ db_config = {
 db_manager = DatabaseManager(**db_config)
 db_manager.create_tables()
 
-scheduler = Scheduler(db_config)
-scheduler.start()
+# scheduler = Scheduler(db_config)
+# scheduler.start()
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
@@ -26,5 +26,23 @@ if __name__ == "__main__":
 
     ex = AccreditationApp(db_manager)  # Создаем главное окно
     ex.show()  # Показываем окно
+
+    # scheduler = Scheduler(db_config)
+    #
+    # # Добавляем задачу, которая выполняется каждые 2 минуты
+    # scheduler.scheduler.add_job(scheduler.generate_recheck_file, "interval", minutes=1)
+    #
+    # # Запуск планировщика
+    # scheduler.start()
+    #
+    # print("Планировщик запущен. Ожидайте выполнения задачи.")
+    #
+    # try:
+    #     # Оставляем планировщик работать
+    #     while True:
+    #         pass
+    # except (KeyboardInterrupt, SystemExit):
+    #     # Остановка планировщика при завершении работы
+    #     scheduler.stop()
 
     sys.exit(app.exec_())

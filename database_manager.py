@@ -15,9 +15,9 @@ class DatabaseManager:
 
     def create_tables(self):
         try:
-            # Создаем таблицу, если ее нет
+            # Создаем таблицы, если их нет
             self.cursor.execute("""
-            CREATE TABLE IF NOT EXISTS accredited (
+            CREATE TABLE IF NOT EXISTS MainTable (
                 id SERIAL PRIMARY KEY,
                 surname TEXT NOT NULL,
                 name TEXT NOT NULL,
@@ -28,93 +28,127 @@ class DatabaseManager:
                 organization TEXT NOT NULL,
                 position TEXT,
                 added_date TIMESTAMP NOT NULL DEFAULT NOW(),
-                last_check_date TIMESTAMP,
-                accreditation_end_date TIMESTAMP,
                 blacklist BOOLEAN DEFAULT FALSE
             );
             """)
+
             self.cursor.execute("""
-            CREATE TABLE IF NOT EXISTS transactions (
+            CREATE TABLE IF NOT EXISTS AccrTable (
                 id SERIAL PRIMARY KEY,
-                accredited_id INT NOT NULL REFERENCES accredited(id),
-                check_date TIMESTAMP NOT NULL DEFAULT NOW(),
-                operation_type TEXT NOT NULL
+                main_table_id INT NOT NULL REFERENCES MainTable(id),
+                request_date TIMESTAMP NOT NULL DEFAULT NOW(),
+                status TEXT DEFAULT 'Pending'
             );
             """)
+
+            self.cursor.execute("""
+            CREATE TABLE IF NOT EXISTS Records (
+                id SERIAL PRIMARY KEY,
+                main_table_id INT NOT NULL REFERENCES MainTable(id),
+                operation_type TEXT NOT NULL,
+                operation_date TIMESTAMP NOT NULL DEFAULT NOW()
+            );
+            """)
+
+            self.cursor.execute("""
+            CREATE TABLE IF NOT EXISTS AccreditationPeriodTable (
+                id SERIAL PRIMARY KEY,
+                main_table_id INT NOT NULL REFERENCES MainTable(id),
+                start_date TIMESTAMP NOT NULL,
+                end_date TIMESTAMP NOT NULL
+            );
+            """)
+
             self.connection.commit()
             print("Таблицы успешно созданы или уже существуют")
         except Exception as e:
-            self.connection.rollback()  # Откатываем изменения при ошибке
+            self.connection.rollback()
             print(f"Ошибка при создании таблиц: {e}")
 
     def add_person(self, surname, name, middle_name, birth_date, birth_place, registration, organization, position):
         try:
+            print(surname, name, middle_name, birth_date, birth_place, registration, organization, position)
             accreditation_end_date = datetime.now() + timedelta(days=180)
+            # accreditation_end_date = datetime.now() - timedelta(days=1)
+
+            # Добавляем запись в MainTable
             self.cursor.execute("""
-            INSERT INTO accredited (surname, name, middle_name, birth_date, birth_place, registration, organization, 
-                                    position, last_check_date, accreditation_end_date)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s);
-            """, (surname, name, middle_name, birth_date, birth_place, registration, organization, position,
-                  datetime.now(), accreditation_end_date))
+            INSERT INTO MainTable (surname, name, middle_name, birth_date, birth_place, registration, organization, 
+                                   position, added_date)
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s) RETURNING id;
+            """, (surname, name, middle_name, birth_date, birth_place, registration, organization, position, datetime.now()))
+
+            person_id = self.cursor.fetchone()[0]
+            try:
+                # Добавляем запись в AccreditationPeriodTable
+                self.cursor.execute("""
+                INSERT INTO AccreditationPeriodTable (main_table_id, start_date, end_date)
+                VALUES (%s, %s, %s);
+                """, (person_id, datetime.now(), accreditation_end_date))
+            except Exception as e:
+                print(e)
             self.connection.commit()
+            print(f"{person_id} Сотрудник {surname} {name} успешно добавлен.")
         except Exception as e:
-            self.connection.rollback()  # Откат транзакции
+            self.connection.rollback()
             print(f"Ошибка при добавлении сотрудника: {e}")
 
     def find_matches(self, surname, name, middle_name, birth_date, organization):
-        """
-        Проверяет, существует ли сотрудник в базе данных.
-        """
         try:
             self.cursor.execute("""
-            SELECT id FROM accredited
+            SELECT id FROM MainTable
             WHERE surname = %s AND name = %s AND middle_name = %s AND birth_date = %s AND organization = %s;
             """, (surname, name, middle_name, birth_date, organization))
             return self.cursor.fetchone() is not None
         except Exception as e:
             print(f"Ошибка при поиске сотрудника: {e}")
-            self.connection.rollback()  # Откат транзакции при ошибке
+            self.connection.rollback()
             return False
+
+    def get_people_for_recheck(self):
+        try:
+            query = """
+                        SELECT m.id, m.surname, m.name, m.middle_name, m.birth_date, a.end_date
+                        FROM MainTable m
+                        JOIN AccreditationPeriodTable a ON m.id = a.main_table_id
+                        WHERE a.end_date < NOW() AND (m.blacklist IS NULL OR NOT m.blacklist);
+                    """
+            self.cursor.execute(query)
+            recheck_people = self.cursor.fetchall()
+            print("Данные для перепроверки:", recheck_people)
+
+            return recheck_people
+        except Exception as e:
+            print(f"Ошибка при получении данных для перепроверки: {e}")
+            return []
 
     def save_valid_data(self, data):
         for row in data:
+            print(row)
             try:
                 surname = row.get('Фамилия')
                 name = row.get('Имя')
                 middle_name = row.get('Отчество')
-                birth_date = row.get('Дата рождения')
+                birth_date_str = row.get('Дата рождения')
                 birth_place = row.get('Место рождения')
                 registration = row.get('Регистрация')
                 organization = row.get('Организация')
                 position = row.get('Должность')
 
-                if surname and name and birth_date and organization:
+                if surname and name and birth_date_str and organization:
+                    # Конвертация строки в объект datetime.date
+                    try:
+                        birth_date = datetime.strptime(birth_date_str, '%d.%m.%Y').date()
+                    except ValueError:
+                        print(f"Ошибка: Неверный формат даты рождения {birth_date_str}")
+                        continue  # Пропускаем строку, если формат даты неверный
+
                     if not self.find_matches(surname, name, middle_name, birth_date, organization):
                         self.add_person(surname, name, middle_name, birth_date, birth_place, registration, organization,
                                         position)
             except Exception as e:
                 print(f"Ошибка при сохранении строки: {e}")
                 self.connection.rollback()  # Откат транзакции
-
-    def get_people_for_recheck(self):
-        query = """
-        SELECT id, surname, name, middle_name, birth_date, accreditation_end_date
-        FROM accredited
-        WHERE accreditation_end_date < NOW() AND NOT blacklist;
-        """
-        self.cursor.execute(query)
-        return self.cursor.fetchall()
-
-    def log_transaction(self, accredited_id, operation_type):
-        try:
-            self.cursor.execute("""
-            INSERT INTO transactions (accredited_id, operation_type)
-            VALUES (%s, %s);
-            """, (accredited_id, operation_type))
-            self.connection.commit()
-        except Exception as e:
-            self.connection.rollback()  # Откат транзакции
-            print(f"Ошибка при записи транзакции: {e}")
 
     def get_person_id(self, fio, birth_date):
         """
@@ -141,39 +175,39 @@ class DatabaseManager:
             self.connection.rollback()
             return None
 
-    def add_person_to_blacklist(self, surname, name, middle_name, birth_date, birth_place, registration, organization,
-                                position):
-        """
-        Добавляет пользователя в черный список.
-        Если пользователь уже существует, обновляет флаг "blacklist".
-        Если пользователь не существует, создает новую запись с флагом "blacklist = TRUE".
-        """
+    def log_transaction(self, main_table_id, operation_type):
         try:
-            # Ищем пользователя в БД
-            person_id = self.get_person_id(f"{surname} {name} {middle_name}", birth_date)
-
-            if person_id:
-                # Если пользователь существует, обновляем флаг "blacklist"
-                self.cursor.execute("""
-                UPDATE accredited
-                SET blacklist = TRUE
-                WHERE id = %s;
-                """, (person_id,))
-                self.log_transaction(person_id, "Added to Blacklist")
-            else:
-                # Если пользователь не существует, создаем новую запись с флагом "blacklist"
-                accreditation_end_date = datetime.now() + timedelta(days=180)
-                self.cursor.execute("""
-                INSERT INTO accredited (surname, name, middle_name, birth_date, birth_place, registration, organization, 
-                                        position, last_check_date, accreditation_end_date, blacklist)
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, TRUE);
-                """, (surname, name, middle_name, birth_date, birth_place, registration, organization, position,
-                      datetime.now(), accreditation_end_date))
-                person_id = self.cursor.fetchone()[0]
-                self.log_transaction(person_id, "Added to Blacklist")
-
+            self.cursor.execute("""
+            INSERT INTO Records (main_table_id, operation_type)
+            VALUES (%s, %s);
+            """, (main_table_id, operation_type))
             self.connection.commit()
-            print(f"Пользователь {surname} {name} {middle_name} успешно добавлен в черный список.")
+        except Exception as e:
+            self.connection.rollback()
+            print(f"Ошибка при записи транзакции: {e}")
+
+    def add_person_to_blacklist(self, surname, name, middle_name, birth_date):
+        try:
+            self.cursor.execute("""
+            SELECT id FROM MainTable
+            WHERE surname = %s AND name = %s AND middle_name = %s AND birth_date = %s;
+            """, (surname, name, middle_name, birth_date))
+
+            result = self.cursor.fetchone()
+            if not result:
+                print("Сотрудник не найден в базе данных.")
+                return
+
+            person_id = result[0]
+            self.cursor.execute("""
+            UPDATE MainTable
+            SET blacklist = TRUE
+            WHERE id = %s;
+            """, (person_id,))
+
+            self.log_transaction(person_id, "Added to Blacklist")
+            self.connection.commit()
+            print(f"Сотрудник {surname} {name} {middle_name} успешно добавлен в черный список.")
         except Exception as e:
             self.connection.rollback()
             print(f"Ошибка при добавлении в черный список: {e}")
@@ -181,3 +215,4 @@ class DatabaseManager:
     def close(self):
         self.cursor.close()
         self.connection.close()
+

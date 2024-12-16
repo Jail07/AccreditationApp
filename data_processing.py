@@ -8,14 +8,16 @@ class DataProcessor:
 
     def detectSequentialDates(self, df, date_column='Дата рождения', max_allowed_sequence=2):
         """
-        Находит строки с последовательными датами (увеличение на день или год).
-        Выделяет строки, где больше `max_allowed_sequence` последовательных дат.
+        Находит строки с последовательными датами (увеличение на день или год)
+        и строки с тремя и более одинаковыми датами рождения подряд.
+        Выделяет такие строки как подозрительные.
         """
         if date_column not in df.columns:
             return []
 
         suspicious_indices = []
         sequential_count = 1
+        duplicate_count = 1
 
         for i in range(1, len(df)):
             try:
@@ -23,19 +25,31 @@ class DataProcessor:
                 prev_date = pd.to_datetime(df.iloc[i - 1][date_column], dayfirst=True, errors='coerce')
 
                 if pd.notna(current_date) and pd.notna(prev_date):
-                    # Проверка на последовательность дат
+                    # Проверка на последовательность дат (по дням или годам)
                     if (current_date - prev_date).days == 1 or (current_date.year - prev_date.year == 1):
                         sequential_count += 1
                     else:
                         sequential_count = 1
 
-                    # Если последовательность превышает допустимый лимит, отмечаем строки
+                    # Проверка на одинаковые даты рождения подряд
+                    if current_date == prev_date:
+                        duplicate_count += 1
+                    else:
+                        duplicate_count = 1
+
+                    # Если последовательность превышает допустимый лимит, добавляем в подозрительные
                     if sequential_count > max_allowed_sequence:
                         suspicious_indices.extend(range(i - max_allowed_sequence, i + 1))
+
+                    # Если 3 или более одинаковых даты подряд, добавляем в подозрительные
+                    if duplicate_count >= 3:
+                        suspicious_indices.extend(range(i - duplicate_count + 1, i + 1))
                 else:
                     sequential_count = 1
+                    duplicate_count = 1
             except Exception:
                 sequential_count = 1
+                duplicate_count = 1
 
         return list(set(suspicious_indices))
 

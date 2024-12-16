@@ -279,19 +279,19 @@ class AccreditationApp(QWidget):
         """
         try:
             selected_row = self.tableWidget.currentRow()
+            # print(selected_row)
             if selected_row != -1:
-                surname = self.tableWidget.item(selected_row, 0).text()
-                name = self.tableWidget.item(selected_row, 1).text()
-                middle_name = self.tableWidget.item(selected_row, 2).text() or ""
-                birth_date = self.tableWidget.item(selected_row, 3).text()
-                birth_place = self.tableWidget.item(selected_row, 4).text()
-                registration = self.tableWidget.item(selected_row, 5).text()
-                organization = self.tableWidget.item(selected_row, 6).text()
-                position = self.tableWidget.item(selected_row, 7).text()
+                surname = self.tableWidget.item(selected_row, 1).text()
+                name = self.tableWidget.item(selected_row, 2).text()
+                middle_name = self.tableWidget.item(selected_row, 3).text() or ""
+                birth_date = self.tableWidget.item(selected_row, 4).text()
+                # birth_place = self.tableWidget.item(selected_row, 4).text()
+                # registration = self.tableWidget.item(selected_row, 5).text()
+                # organization = self.tableWidget.item(selected_row, 6).text()
+                # position = self.tableWidget.item(selected_row, 7).text()
 
                 self.db_manager.add_person_to_blacklist(
-                    surname, name, middle_name, birth_date, birth_place, registration, organization, position
-                )
+                    surname, name, middle_name, birth_date)
                 self.logMessage(f"{surname} {name} {middle_name} добавлен в черный список.")
             else:
                 self.logMessage("Ошибка: Не выбрана строка для добавления в черный список.")
