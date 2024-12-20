@@ -1,9 +1,8 @@
-from PyQt5.QtWidgets import QWidget, QVBoxLayout, QPushButton, QFileDialog, QTableWidget, QTableWidgetItem, QTextEdit, \
-    QHBoxLayout
+from datetime import datetime
+
+from PyQt5.QtWidgets import QWidget, QVBoxLayout, QPushButton, QFileDialog, QTableWidget, QTableWidgetItem, QTextEdit, QHBoxLayout
+from apscheduler.schedulers.background import BackgroundScheduler
 from PyQt5.QtGui import QColor
-from openpyxl import Workbook
-from openpyxl.styles import PatternFill
-from openpyxl.utils.dataframe import dataframe_to_rows
 from data_processing import DataProcessor
 from file_manager import FileManager
 import pandas as pd
@@ -12,32 +11,25 @@ import pandas as pd
 class AccreditationApp(QWidget):
     def __init__(self, db_manager):
         super().__init__()
+        self.scheduler = BackgroundScheduler()
         self.db_manager = db_manager
+        self.file_manager = FileManager()
         self.initUI()
 
     def logMessage(self, message):
-        """
-        Добавляет сообщение в текстовое поле логов.
-        Если текстовое поле скрыто, оно становится видимым.
-        """
+        """Добавляет сообщение в текстовое поле логов."""
         if not self.logText.isVisible():
             self.logText.show()
         self.logText.append(message)
 
     def initUI(self):
         self.setWindowTitle('Обработка аккредитации')
-
-        # Основной макет
         layout = QHBoxLayout()
 
-        # Левая часть с таблицей и кнопками
         left_layout = QVBoxLayout()
-
-        # Таблица
         self.tableWidget = QTableWidget(self)
         left_layout.addWidget(self.tableWidget)
 
-        # Кнопки
         self.loadButton = QPushButton('Загрузить таблицу', self)
         self.loadButton.clicked.connect(self.loadFile)
         left_layout.addWidget(self.loadButton)
@@ -46,29 +38,33 @@ class AccreditationApp(QWidget):
         self.checkButton.clicked.connect(self.checkData)
         left_layout.addWidget(self.checkButton)
 
-        self.uploadButton = QPushButton('Загрузить в БД', self)
-        self.uploadButton.setEnabled(False)  # Кнопка неактивна, пока не выполнена проверка данных
-        self.uploadButton.clicked.connect(self.uploadToDB)
-        left_layout.addWidget(self.uploadButton)
+        # Кнопка для добавления во временную таблицу (TD)
+        self.addToTempDBButton = QPushButton('Добавить в временную БД', self)
+        self.addToTempDBButton.clicked.connect(self.addToTemporaryDB)
+        left_layout.addWidget(self.addToTempDBButton)
 
-        self.saveButton = QPushButton('Сохранить файл', self)
-        self.saveButton.clicked.connect(self.saveFile)
-        left_layout.addWidget(self.saveButton)
+        # Кнопка для добавления в постоянную таблицу (AccrTable)
+        self.addToPermDBButton = QPushButton('Добавить в постоянную БД', self)
+        self.addToPermDBButton.clicked.connect(self.addToPermanentDB)
+        left_layout.addWidget(self.addToPermDBButton)
 
-        self.blacklistButton = QPushButton('Добавить в черный список', self)
-        self.blacklistButton.clicked.connect(self.addToBlacklist)
+        self.generateFileButton = QPushButton('Генерация файла проверки', self)
+        self.generateFileButton.clicked.connect(self.generateRecheckFile)
+        left_layout.addWidget(self.generateFileButton)
+
+        self.blacklistButton = QPushButton('Черный список', self)
+        self.blacklistButton.clicked.connect(self.manageBlacklist)
         left_layout.addWidget(self.blacklistButton)
 
         layout.addLayout(left_layout)
 
-        # Правая часть с логами
         self.logText = QTextEdit(self)
-        self.logText.setReadOnly(True)  # Поле только для чтения
-        self.logText.hide()  # Скрываем поле до нажатия на "Проверка данных"
+        self.logText.setReadOnly(True)
+        self.logText.hide()
         layout.addWidget(self.logText)
 
         self.setLayout(layout)
-        self.df = None  # Для хранения данных
+        self.df = None
         self.processor = DataProcessor()
         self.file_manager = FileManager()
 
@@ -77,12 +73,10 @@ class AccreditationApp(QWidget):
         if file_name:
             self.df = pd.read_excel(file_name)
             self.displayTable()
-            self.logText.clear()  # Очищаем логи при загрузке нового файла
+            self.logText.clear()
 
     def displayTable(self):
-        """
-        Отображает содержимое DataFrame в QTableWidget.
-        """
+        """Отображает содержимое DataFrame в QTableWidget."""
         self.tableWidget.setRowCount(len(self.df))
         self.tableWidget.setColumnCount(len(self.df.columns))
         self.tableWidget.setHorizontalHeaderLabels(self.df.columns)
@@ -104,198 +98,164 @@ class AccreditationApp(QWidget):
         try:
             # Этап 1: Нормализация данных
             try:
-                self.df = self.processor.cleanData(self.df)  # Нормализация строк и дат
+                self.df = self.processor.cleanData(self.df)
                 self.logMessage("Данные нормализованы.")
-                self.displayTable()  # Обновляем таблицу
+                self.displayTable()
             except Exception as e:
                 self.logMessage(f"Ошибка нормализации данных: {e}")
                 return
 
-
-            # Этап 2: Проверка на наличие обязательных данных
-            required_columns = ['Фамилия', 'Имя', 'Отчество', 'Дата рождения', 'Место рождения', 'Регистрация',
-                                'Организация', 'Должность']
-            missing_data_info = {}
-
+            # Этап 2: Проверка обязательных данных
+            required_columns = ['Фамилия', 'Имя', 'Отчество', 'Дата рождения', 'Организация']
             for i in self.df.index:
                 missing_columns = [col for col in required_columns if pd.isna(self.df.at[i, col])]
                 if missing_columns:
-                    missing_data_info[i] = missing_columns
-                    self.df.at[i, 'Статус'] = f"Отсутствуют: {', '.join(missing_columns)}"  # Записываем статус
-
-            # Логируем строки с отсутствующими данными
-            for i, missing_columns in missing_data_info.items():
-                self.logMessage(f"Строка {i + 1}: отсутствуют обязательные поля: {', '.join(missing_columns)}")
-
-            # Обновляем таблицу после проверки обязательных данных
-            self.displayTable()
-
-            # Этап 3: Проверка на дублирование в файле
-            try:
-                self.df = self.processor.checkDuplicates(self.df)  # Обновляем DataFrame
-                self.displayTable()  # Синхронизируем таблицу
-            except Exception as e:
-                self.logMessage(f"Ошибка проверки на дублирование: {e}")
-                return
-
-            # Этап 4: Проверка на дублирование в БД
-            db_duplicate_indices = []
-            for i in self.df.index:
-                row = self.df.loc[i]
-                surname = row['Фамилия']
-                name = row['Имя']
-                middle_name = row['Отчество']
-                birth_date = row['Дата рождения']
-                organization = row['Организация']
-
-                if self.db_manager.find_matches(surname, name, middle_name, birth_date, organization):
-                    db_duplicate_indices.append(i)
-                    self.df.at[i, 'Статус'] = "Дубликат в БД"  # Добавляем статус
-
-            # Обновляем таблицу после проверки дубликатов в БД
-            self.displayTable()
-
-            # Этап 5: Проверка подозрительных последовательностей дат
-            suspicious_indices = []
-            if 'Дата рождения' in self.df.columns:
-                try:
-                    suspicious_indices = self.processor.detectSequentialDates(self.df, 'Дата рождения')
-                    for idx in suspicious_indices:
-                        self.df.at[idx, 'Статус'] = "Подозрительная дата"  # Обновляем статус
-                except Exception as e:
-                    self.logMessage(f"Ошибка проверки последовательности дат: {e}")
-
-            self.displayTable()  # Обновляем таблицу после проверки последовательностей
-
-            # Этап 6: Цветовая маркировка
-            for i in self.df.index:
-                color = None
-                status = self.df.at[i, 'Статус']
-                if i in missing_data_info:
-                    color = QColor(255, 165, 0)  # Оранжевый: отсутствуют данные
-                elif self.df.at[i, 'Повтор']:
-                    color = QColor(255, 0, 0)  # Красный: дублирование в файле
-                elif i in db_duplicate_indices:
-                    color = QColor(128, 0, 128)  # Фиолетовый: дублирование в БД
-                elif i in suspicious_indices:
-                    color = QColor(0, 0, 255)  # Синий: подозрительная последовательность дат
+                    self.df.at[i, 'Статус'] = f"Отсутствуют: {', '.join(missing_columns)}"
+                    self.logMessage(f"Строка {i + 1}: отсутствуют обязательные поля: {', '.join(missing_columns)}")
                 else:
-                    color = QColor(0, 255, 0)  # Зеленый: данные корректны
-                    self.df.at[i, 'Добавлено'] = True
+                    self.df.at[i, 'Статус'] = "Корректные данные"
 
-                for j in range(self.tableWidget.columnCount()):
-                    item = self.tableWidget.item(i, j) or QTableWidgetItem(str(self.df.iloc[i, j]))
-                    item.setBackground(color)
-                    self.tableWidget.setItem(i, j, item)
+            self.displayTable()
 
+            # Этап 3: Проверка на дубликаты
+            duplicates = self.df.duplicated(subset=['Фамилия', 'Имя', 'Отчество', 'Дата рождения', 'Организация'], keep='first')
+            for idx in self.df.index[duplicates]:
+                self.logMessage(f"Дубликат удален: строка {idx + 1}.")
+            self.df = self.df[~duplicates].reset_index(drop=True)
+            self.displayTable()
 
-            self.uploadButton.setEnabled(True)  # Активируем кнопку добавления в БД
+            # Этап 4: Проверка в БД
+            for i, row in self.df.iterrows():
+                if self.db_manager.find_matches_TD(row['Фамилия'], row['Имя'], row['Отчество'], row['Дата рождения'], row['Организация']) or self.db_manager.find_matches_AccrTable(row['Фамилия'], row['Имя'], row['Отчество'], row['Дата рождения'], row['Организация']):
+                    self.df.at[i, 'Статус'] = "уже есть в Временной БД"
+                    self.logMessage(f"Дублирование с БД: строка {i + 1}. Статус изменен на 'уже есть в БД'.")
+
+                if self.db_manager.find_matches_AccrTable(row['Фамилия'], row['Имя'], row['Отчество'], row['Дата рождения'], row['Организация']):
+                    self.df.at[i, 'Статус'] = "уже есть в Постаянной БД"
+                    self.logMessage(f"Дублирование с БД: строка {i + 1}. Статус изменен на 'уже есть в БД'.")
+
+            self.displayTable()
+
+            # Этап 5: Подозрительная последовательность дат
+            suspicious_indices = self.processor.detectSequentialDates(self.df, 'Дата рождения')
+            for idx in suspicious_indices:
+                self.df.at[idx, 'Статус'] = "Подозрительная последовательность дат"
+                self.logMessage(f"Подозрительная последовательность дат: строка {idx + 1}.")
+
+            self.displayTable()
+
         except Exception as e:
             self.logMessage(f"Ошибка проверки данных: {e}")
 
-    def uploadToDB(self):
+    def addToTemporaryDB(self):
+        """Добавляет строки во временную таблицу TD."""
         if self.df is None:
             self.logMessage("Ошибка: Данные не загружены!")
             return
 
         try:
             added_count = 0
-            for index, row in self.df.iterrows():
-                if row.get('Добавлено', True):  # Только строки со статусом "Добавлено"
-                    self.db_manager.save_valid_data([row.to_dict()])
+            for _, row in self.df.iterrows():
+                if row['Статус'] == "Корректные данные" or row['Статус'] == "Подозрительная последовательность дат":
+                    self.db_manager.add_to_td(row.to_dict())
                     added_count += 1
 
-            self.logMessage(f"Добавлено {added_count} строк в базу данных.")
-            self.uploadButton.setEnabled(False)  # Отключаем кнопку после загрузки
+            self.logMessage(f"Добавлено {added_count} строк в временную таблицу TD.")
         except Exception as e:
-            self.logMessage(f"Ошибка загрузки данных в БД: {e}")
+            self.logMessage(f"Ошибка добавления в временную БД: {e}")
 
-    def updateTableColors(self, invalid_indices, suspicious_indices):
-        for i in range(self.tableWidget.rowCount()):
-            color = None
-
-            if i in invalid_indices:
-                color = QColor(255, 165, 0)  # Оранжевый
-            elif self.df.iloc[i].get('Повтор', False):
-                color = QColor(255, 0, 0)  # Красный
-            elif i in suspicious_indices:
-                color = QColor(0, 0, 255)  # Синий
-            elif self.df.iloc[i].get('Добавлено', False):
-                color = QColor(0, 255, 0)  # Зеленый
-
-            for j in range(self.tableWidget.columnCount()):
-                item = self.tableWidget.item(i, j) or QTableWidgetItem(str(self.df.iloc[i, j]))
-                if color:
-                    item.setBackground(color)
-                self.tableWidget.setItem(i, j, item)
-
-    def saveFile(self):
+    def addToPermanentDB(self):
+        """Добавляет строки в постоянную таблицу AccrTable."""
         if self.df is None:
-            self.logMessage("Ошибка: Нет данных для сохранения.")
-            return
-
-        file_name, _ = QFileDialog.getSaveFileName(self, "Сохранить файл", "", "Excel Files (*.xlsx)")
-        if not file_name:
+            self.logMessage("Ошибка: Данные не загружены!")
             return
 
         try:
-            wb = Workbook()
-            sheet = wb.active
-            sheet.title = "Результаты проверки"
+            added_count = 0
+            for _, row in self.df.iterrows():
+                if row['Статус'] == "Корректные данные":
+                    self.db_manager.add_to_accrtable(row.to_dict(), status="аккредитован")
+                    added_count += 1
 
-            color_map = {
-                'Оранжевый': 'FFFFA500',
-                'Красный': 'FFFF0000',
-                'Зеленый': 'FF00FF00'
-            }
-            required_columns = ['Фамилия', 'Имя', 'Отчество', 'Дата рождения', 'Место рождения', 'Регистрация',
-                                'Организация', 'Должность']
-            valid_data = self.df.dropna(subset=required_columns)
-
-            # Запись данных в Excel
-            for r_idx, row in enumerate(dataframe_to_rows(self.df, index=False, header=True)):
-                for c_idx, value in enumerate(row):
-                    cell = sheet.cell(row=r_idx + 1, column=c_idx + 1, value=value)
-
-                    # Применяем цвета
-                    if r_idx > 0:  # Пропускаем заголовки
-                        table_row = r_idx - 1
-                        if table_row in self.df.index:
-                            if table_row in self.df[~self.df.index.isin(valid_data.index)].index:
-                                cell.fill = PatternFill(start_color=color_map['Оранжевый'], fill_type="solid")
-                            elif self.df.at[table_row, 'Повтор']:
-                                cell.fill = PatternFill(start_color=color_map['Красный'], fill_type="solid")
-                            elif self.df.at[table_row, 'Добавлено']:
-                                cell.fill = PatternFill(start_color=color_map['Зеленый'], fill_type="solid")
-
-            wb.save(file_name)
-            self.logMessage(f"Файл сохранен: {file_name}")
+            self.logMessage(f"Добавлено {added_count} строк в постоянную таблицу AccrTable.")
         except Exception as e:
-            self.logMessage(f"Ошибка сохранения файла: {e}")
+            self.logMessage(f"Ошибка добавления в постоянную БД: {e}")
 
-    def addToBlacklist(self):
+    def generateRecheckFile(self):
+        try:
+            self.generate_check_file()
+            # self.db_manager.transfer_to_accrtable()
+            self.logMessage("Файл проверки сгенерирован и данные перемещены в AccrTable.")
+        except Exception as e:
+            print(f"Ошибка при генерации файла: {e}")
+            self.logMessage(f"Ошибка при генерации файла: {e}")
+
+    def generate_check_file(self):
+        print("1"*100)
         """
-        Добавляет выбранного пользователя в черный список.
+        Генерация файла проверки во вторник.
+        Сохраняет файл и логирует действия.
         """
         try:
-            selected_row = self.tableWidget.currentRow()
-            # print(selected_row)
-            if selected_row != -1:
-                surname = self.tableWidget.item(selected_row, 1).text()
-                name = self.tableWidget.item(selected_row, 2).text()
-                middle_name = self.tableWidget.item(selected_row, 3).text() or ""
-                birth_date = self.tableWidget.item(selected_row, 4).text()
-                # birth_place = self.tableWidget.item(selected_row, 4).text()
-                # registration = self.tableWidget.item(selected_row, 5).text()
-                # organization = self.tableWidget.item(selected_row, 6).text()
-                # position = self.tableWidget.item(selected_row, 7).text()
+            # Получаем данные для перепроверки
+            people_for_recheck = self.db_manager.transfer_to_accrtable()
+            print(people_for_recheck)
 
-                self.db_manager.add_person_to_blacklist(
-                    surname, name, middle_name, birth_date)
-                self.logMessage(f"{surname} {name} {middle_name} добавлен в черный список.")
+            if people_for_recheck:
+                today_date = datetime.now().strftime('%d-%m-%Y')
+                file_name = f"Запрос на проверку_{today_date}.xlsx"
+
+
+                # Формируем данные для файла
+                data = [
+                    {
+                        "Фамилия": p[1],
+                        "Имя": p[2],
+                        "Отчество": p[3] or '',
+                        "Дата рождения": p[4].strftime('%d.%m.%Y'),
+                        "Организация": p[5],
+                    }
+                    for p in people_for_recheck
+                ]
+
+                # Создаем DataFrame и сохраняем файл
+                df = pd.DataFrame(data)
+                self.file_manager.saveFile(df, file_name)
+
+                # Логируем транзакции
+                for person in people_for_recheck:
+                    self.db_manager.log_transaction(person[0], "Generated Recheck File")
+
+                print(f"Файл проверки успешно сгенерирован: {file_name}")
             else:
-                self.logMessage("Ошибка: Не выбрана строка для добавления в черный список.")
+                print("Нет данных для генерации файла проверки.")
         except Exception as e:
-            self.logMessage(f"Ошибка добавления в черный список: {e}")
+            print(f"Ошибка при генерации файла проверки: {e}")
 
 
+    def manageBlacklist(self):
+        """Управление статусом 'в ЧС'."""
+        selected_row = self.tableWidget.currentRow()
+        if selected_row == -1:
+            self.logMessage("Ошибка: Не выбрана строка для управления черным списком.")
+            return
+        surname = self.tableWidget.item(selected_row, 1).text()
+        name = self.tableWidget.item(selected_row, 2).text()
+        middle_name = self.tableWidget.item(selected_row, 3).text()
+        birth_date = self.tableWidget.item(selected_row, 4).text()
+        birth_place = self.tableWidget.item(selected_row, 5).text()
+        registration = self.tableWidget.item(selected_row, 6).text()
+        organization = self.tableWidget.item(selected_row, 7).text()
+        position = self.tableWidget.item(selected_row, 8).text()
+
+        try:
+            status_changed = self.db_manager.toggle_blacklist(surname, name, middle_name, birth_date, birth_place, registration, organization, position)
+            if status_changed == "добавлен в черный список":
+                self.logMessage(f"{surname} {name} {middle_name} добавлен в черный список.")
+            elif status_changed == "убран из черного списка":
+                self.logMessage(f"{surname} {name} {middle_name} убран из черного списка.")
+            elif not status_changed:
+                self.logMessage(f"Ошибка управления черным списком: {surname} {name} {middle_name} не изменён.")
+
+        except Exception as e:
+            self.logMessage(f"Ошибка управления черным списком: {e}")

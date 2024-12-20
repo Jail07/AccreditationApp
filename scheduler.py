@@ -1,54 +1,96 @@
-from apscheduler.schedulers.background import BackgroundScheduler
-from file_manager import FileManager
-from database_manager import DatabaseManager
-from datetime import datetime
 import pandas as pd
-import logging
+from apscheduler.schedulers.background import BackgroundScheduler
+from datetime import datetime, date
+from pytz import timezone
+import traceback
 
-# Настройка логирования
-logging.basicConfig(level=logging.INFO, format="%(asctime)s - %(message)s")
+from database_manager import DatabaseManager
+from file_manager import FileManager
+
 
 
 class Scheduler:
     def __init__(self, db_config):
-        self.scheduler = BackgroundScheduler()
+        self.scheduler = BackgroundScheduler(timezone="Asia/Bishkek")  # Установите вашу временную зону
         self.db_manager = DatabaseManager(**db_config)
         self.file_manager = FileManager()
 
     def generate_recheck_file(self):
-        logging.info("Начало выполнения задачи: generate_recheck_file")
+        """
+        Генерация файла проверки.
+        Сохраняет файл и логирует действия.
+        """
         try:
-            people_for_recheck = self.db_manager.get_people_for_recheck()
+            print("Генерация файла проверки началась.")
+            # Получаем данные для перепроверки
+            people_for_recheck = self.db_manager.transfer_to_accrtable()
+            print(people_for_recheck)
+
             if people_for_recheck:
                 today_date = datetime.now().strftime('%d-%m-%Y')
                 file_name = f"Запрос на проверку_{today_date}.xlsx"
 
+                # Формируем данные для файла
                 data = [
                     {
-                        "ФИО": f"{p[1]} {p[2]} {p[3] if p[3] else ''}".strip(),
-                        "Дата рождения": p[4].strftime('%d.%m.%Y'),
-                        "Срок аккредитации истёк": p[5].strftime('%d.%m.%Y')
+                        "Фамилия": p[1],
+                        "Имя": p[2],
+                        "Отчество": p[3] or '',
+                        "Дата рождения": p[4].strftime('%d.%m.%Y') if isinstance(p[4], date) else '',
+                        "Организация": p[5],
                     }
                     for p in people_for_recheck
                 ]
 
+                # Создаем DataFrame и сохраняем файл
                 df = pd.DataFrame(data)
                 self.file_manager.saveFile(df, file_name)
 
+                # Логируем транзакции
                 for person in people_for_recheck:
                     self.db_manager.log_transaction(person[0], "Generated Recheck File")
 
-                logging.info(f"Файл '{file_name}' успешно создан.")
+                print(f"Файл проверки успешно сгенерирован: {file_name}")
             else:
-                logging.info("Нет данных для проверки.")
+                print("Нет данных для генерации файла проверки.")
         except Exception as e:
-            logging.error(f"Ошибка во время выполнения задачи: {e}")
+            print(f"Ошибка при генерации файла проверки: {e}")
+
+    def check_schedule_and_generate(self):
+        """
+        Проверяет расписание и вызывает генерацию файла проверки.
+        """
+        try:
+            now = datetime.now()
+            print(f"[DEBUG] Проверка расписания в: {now}.")
+            self.generate_recheck_file()
+        except Exception as e:
+            print(f"Ошибка при проверке расписания: {e}\n{traceback.format_exc()}")
 
     def start(self):
-        logging.info("Запуск планировщика.")
-        self.scheduler.add_job(self.generate_recheck_file, "cron", day_of_week="tue", hour=10)
-        self.scheduler.start()
+        """
+        Запуск планировщика.
+        """
+        try:
+            print("[DEBUG] Запуск планировщика.")
+            self.scheduler.add_job(
+                self.check_schedule_and_generate,
+                "cron",
+                day_of_week="fri",
+                hour=22,
+                minute=58,
+            )
+            self.scheduler.start()
+            print(f"[DEBUG] Планировщик успешно запущен. Задача будет выполняться каждый вторник в 10:00.")
+        except Exception as e:
+            print(f"Ошибка при запуске планировщика: {e}\n{traceback.format_exc()}")
 
     def stop(self):
-        logging.info("Остановка планировщика.")
-        self.scheduler.shutdown()
+        """
+        Останавливает планировщик.
+        """
+        try:
+            self.scheduler.shutdown()
+            print("[DEBUG] Планировщик успешно остановлен.")
+        except Exception as e:
+            print(f"Ошибка при остановке планировщика: {e}\n{traceback.format_exc()}")
