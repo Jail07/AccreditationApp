@@ -1,6 +1,9 @@
-from datetime import datetime
-
-from PyQt5.QtWidgets import QWidget, QVBoxLayout, QPushButton, QFileDialog, QTableWidget, QTableWidgetItem, QTextEdit, QHBoxLayout
+import traceback
+from datetime import datetime, date
+from PyQt5.QtWidgets import (
+    QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QPushButton, QFileDialog,
+    QTableWidget, QTableWidgetItem, QTextEdit, QLabel
+)
 from apscheduler.schedulers.background import BackgroundScheduler
 from PyQt5.QtGui import QColor
 from data_processing import DataProcessor
@@ -14,19 +17,63 @@ class AccreditationApp(QWidget):
         self.scheduler = BackgroundScheduler()
         self.db_manager = db_manager
         self.file_manager = FileManager()
+        self.processor = DataProcessor()
+        self.df = None
         self.initUI()
 
-    def logMessage(self, message):
-        """Добавляет сообщение в текстовое поле логов."""
-        if not self.logText.isVisible():
-            self.logText.show()
-        self.logText.append(message)
+    def logMessage(self, message, level="INFO"):
+        """
+        Логирует сообщение с указанием времени и уровня.
+        """
+        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        full_message = f"[{timestamp}] [{level}] {message}"
+        self.logText.append(full_message)
+        print(full_message)  # Для отладки в консоли
 
     def initUI(self):
         self.setWindowTitle('Обработка аккредитации')
-        layout = QHBoxLayout()
 
+        # Основной горизонтальный макет
+        main_layout = QHBoxLayout()
+
+        # Левая половина: Логи и поиск
+        right_layout = QVBoxLayout()
+
+        # Верхняя часть - панель логов
+        self.logText = QTextEdit(self)
+        self.logText.setReadOnly(True)
+        right_layout.addWidget(self.logText, stretch=2)
+
+        # Нижняя часть - панель поиска
+        search_layout = QVBoxLayout()
+
+        search_section = QHBoxLayout()
+        self.searchField = QLineEdit(self)
+        self.searchField.setPlaceholderText("Введите данные для поиска (Фамилия, Имя и т.д.)")
+        self.searchButton = QPushButton("Поиск", self)
+        self.searchButton.clicked.connect(self.searchData)
+        search_section.addWidget(self.searchField)
+        search_section.addWidget(self.searchButton)
+        search_layout.addLayout(search_section)
+
+        # Создание таблицы с фиксированной шириной столбцов
+        self.resultTable = QTableWidget(self)
+        self.resultTable.setColumnCount(3)
+        self.resultTable.setHorizontalHeaderLabels(["ФИО", "Дата рождения", "Статус"])
+
+        # Устанавливаем ширину столбцов
+        self.resultTable.setColumnWidth(0, 300)  # ФИО
+        self.resultTable.setColumnWidth(1, 100)  # Дата рождения
+        self.resultTable.setColumnWidth(2, 300)  # Статус
+
+        # Добавляем таблицу в макет
+        search_layout.addWidget(self.resultTable)
+
+        right_layout.addLayout(search_layout, stretch=1)
+
+        # Правая половина: Таблица и кнопки
         left_layout = QVBoxLayout()
+
         self.tableWidget = QTableWidget(self)
         left_layout.addWidget(self.tableWidget)
 
@@ -51,29 +98,23 @@ class AccreditationApp(QWidget):
         self.generateFileButton = QPushButton('Генерация файла проверки', self)
         self.generateFileButton.clicked.connect(self.generateRecheckFile)
         left_layout.addWidget(self.generateFileButton)
+        
+        self.recordButton = QPushButton("Генерация записи сотрудника", self)
+        self.recordButton.clicked.connect(self.generateEmployeeRecord)
+        left_layout.addWidget(self.recordButton)
 
         self.blacklistButton = QPushButton('Черный список', self)
         self.blacklistButton.clicked.connect(self.manageBlacklist)
         left_layout.addWidget(self.blacklistButton)
 
-        layout.addLayout(left_layout)
 
-        self.logText = QTextEdit(self)
-        self.logText.setReadOnly(True)
-        self.logText.hide()
-        layout.addWidget(self.logText)
+        # Объединение левого и правого макетов в основной макет
+        main_layout.addLayout(left_layout, stretch=3)
+        main_layout.addLayout(right_layout, stretch=2)
 
-        self.setLayout(layout)
-        self.df = None
-        self.processor = DataProcessor()
-        self.file_manager = FileManager()
 
-    def loadFile(self):
-        file_name = self.file_manager.openFile(self)
-        if file_name:
-            self.df = pd.read_excel(file_name)
-            self.displayTable()
-            self.logText.clear()
+        self.setLayout(main_layout)
+
 
     def displayTable(self):
         """Отображает содержимое DataFrame в QTableWidget."""
@@ -86,6 +127,64 @@ class AccreditationApp(QWidget):
                 value = str(self.df.iloc[i, j]) if pd.notna(self.df.iloc[i, j]) else ''
                 item = QTableWidgetItem(value)
                 self.tableWidget.setItem(i, j, item)
+
+
+    def loadFile(self):
+        file_name = self.file_manager.openFile(self)
+        if file_name:
+            self.df = pd.read_excel(file_name)
+            self.displayTable()
+            self.logText.clear()
+
+    def searchData(self):
+        """
+        Выполняет поиск сотрудников по введенным данным.
+        """
+        search_term = self.searchField.text().strip()
+        if not search_term:
+            self.logMessage("Ошибка: Поле поиска пустое.")
+            return
+
+        # Получение результатов поиска
+        results = self.db_manager.search_person(search_term)
+
+        if not results:
+            self.logMessage(f"По запросу '{search_term}' ничего не найдено.")
+            self.resultTable.setRowCount(0)
+            return
+
+        # Отображение результатов в таблице
+        self.resultTable.setRowCount(len(results))
+        for i, (fio, birth_date, status) in enumerate(results):
+            self.resultTable.setItem(i, 0, QTableWidgetItem(fio))
+            self.resultTable.setItem(i, 1, QTableWidgetItem(birth_date.strftime("%d.%m.%Y")))
+            self.resultTable.setItem(i, 2, QTableWidgetItem(status))
+        self.logMessage(f"Найдено {len(results)} совпадений для '{search_term}'.")
+
+    def generateEmployeeRecord(self):
+        """
+        Генерация записи сотрудника.
+        """
+        selected_row = self.resultTable.currentRow()
+        if selected_row == -1:
+            self.logMessage("Ошибка: Не выбран сотрудник для генерации записи.")
+            return
+
+        fio = self.resultTable.item(selected_row, 0).text()
+        birth_date = self.resultTable.item(selected_row, 1).text()
+
+        # Получение записей сотрудника
+        records = self.db_manager.get_employee_records(fio, birth_date)
+
+        if not records:
+            self.logMessage("Нет записей для выбранного сотрудника.")
+            return
+
+        df = pd.DataFrame(records, columns=["Дата/Время", "Объект", "Организация", "Событие"])
+        file_name, _ = QFileDialog.getSaveFileName(self, "Сохранить запись", "", "Excel Files (*.xlsx)")
+        if file_name:
+            df.to_excel(file_name, index=False)
+            self.logMessage(f"Запись сотрудника сохранена: {file_name}")
 
     def checkData(self):
         if self.df is None:
@@ -105,6 +204,8 @@ class AccreditationApp(QWidget):
                 self.logMessage(f"Ошибка нормализации данных: {e}")
                 return
 
+
+
             # Этап 2: Проверка обязательных данных
             required_columns = ['Фамилия', 'Имя', 'Отчество', 'Дата рождения', 'Организация']
             for i in self.df.index:
@@ -120,27 +221,27 @@ class AccreditationApp(QWidget):
             # Этап 3: Проверка на дубликаты
             duplicates = self.df.duplicated(subset=['Фамилия', 'Имя', 'Отчество', 'Дата рождения', 'Организация'], keep='first')
             for idx in self.df.index[duplicates]:
-                self.logMessage(f"Дубликат удален: строка {idx + 1}.")
+                self.logMessage(f"Дубликат удален: строка {idx + 1}")
             self.df = self.df[~duplicates].reset_index(drop=True)
             self.displayTable()
 
-            # Этап 4: Проверка в БД
-            for i, row in self.df.iterrows():
-                if self.db_manager.find_matches_TD(row['Фамилия'], row['Имя'], row['Отчество'], row['Дата рождения'], row['Организация']) or self.db_manager.find_matches_AccrTable(row['Фамилия'], row['Имя'], row['Отчество'], row['Дата рождения'], row['Организация']):
-                    self.df.at[i, 'Статус'] = "уже есть в Временной БД"
-                    self.logMessage(f"Дублирование с БД: строка {i + 1}. Статус изменен на 'уже есть в БД'.")
-
-                if self.db_manager.find_matches_AccrTable(row['Фамилия'], row['Имя'], row['Отчество'], row['Дата рождения'], row['Организация']):
-                    self.df.at[i, 'Статус'] = "уже есть в Постаянной БД"
-                    self.logMessage(f"Дублирование с БД: строка {i + 1}. Статус изменен на 'уже есть в БД'.")
-
-            self.displayTable()
-
-            # Этап 5: Подозрительная последовательность дат
+            # Этап 4: Подозрительная последовательность дат
             suspicious_indices = self.processor.detectSequentialDates(self.df, 'Дата рождения')
             for idx in suspicious_indices:
                 self.df.at[idx, 'Статус'] = "Подозрительная последовательность дат"
                 self.logMessage(f"Подозрительная последовательность дат: строка {idx + 1}.")
+
+            self.displayTable()
+
+            # Этап 5: Проверка в БД
+            for i, row in self.df.iterrows():
+                if self.db_manager.find_matches_TD(row['Фамилия'], row['Имя'], row['Отчество'], row['Дата рождения']):
+                    self.df.at[i, 'Статус'] = "уже есть в Временной БД"
+                    self.logMessage(f"Дублирование с БД: строка {i + 1}. Статус изменен на 'уже есть в Временной БД'.")
+
+                if self.db_manager.find_matches_AccrTable(row['Фамилия'], row['Имя'], row['Отчество'], row['Дата рождения']):
+                    self.df.at[i, 'Статус'] = "уже есть в Постоянной БД"
+                    self.logMessage(f"Дублирование с БД: строка {i + 1}. Статус изменен на 'уже есть в Постоянной БД'.")
 
             self.displayTable()
 
@@ -164,22 +265,47 @@ class AccreditationApp(QWidget):
         except Exception as e:
             self.logMessage(f"Ошибка добавления в временную БД: {e}")
 
+
+    def process_accreditation_file(self):
+        """
+        Проверяет загруженный файл и обновляет статус сотрудников в зависимости от результата проверки.
+        """
+        if self.df is None:
+            self.logMessage("Ошибка: Файл не загружен.")
+            return
+
+        try:
+            # Проверяем, являются ли сотрудники из файла сотрудниками из AccrTable со статусом "в ожидании"
+            valid_ids = self.db_manager.validate_accreditation_file(self.df)
+            if not valid_ids:
+                self.logMessage("Нет соответствий сотрудников из файла с данными в постоянной БД.")
+                return
+
+            # Обновляем статусы и добавляем данные в mainTable
+            self.db_manager.update_accreditation_status_from_file(valid_ids)
+            self.logMessage("Данные сотрудников успешно обновлены. Статус изменён на 'аккредитован'.")
+        except Exception as e:
+            self.logMessage(f"Ошибка обработки файла: {e}")
+
     def addToPermanentDB(self):
-        """Добавляет строки в постоянную таблицу AccrTable."""
+        """
+        Добавляет сотрудников в постоянную БД, обновляя статусы в зависимости от данных.
+        """
         if self.df is None:
             self.logMessage("Ошибка: Данные не загружены!")
             return
 
         try:
-            added_count = 0
-            for _, row in self.df.iterrows():
-                if row['Статус'] == "Корректные данные":
-                    self.db_manager.add_to_accrtable(row.to_dict(), status="аккредитован")
-                    added_count += 1
+            valid_ids = self.db_manager.validate_accreditation_file(self.df)
+            if not valid_ids:
+                self.logMessage("Нет соответствий сотрудников из файла с данными в постоянной БД.")
+                return
 
-            self.logMessage(f"Добавлено {added_count} строк в постоянную таблицу AccrTable.")
+            # Обновляем статусы сотрудников
+            self.db_manager.update_accreditation_status_from_file(valid_ids)
+            self.logMessage("Сотрудники успешно добавлены в постоянную БД и обновлены.")
         except Exception as e:
-            self.logMessage(f"Ошибка добавления в постоянную БД: {e}")
+            self.logMessage(f"Ошибка добавления сотрудников: {e}")
 
     def generateRecheckFile(self):
         try:
@@ -191,47 +317,68 @@ class AccreditationApp(QWidget):
             self.logMessage(f"Ошибка при генерации файла: {e}")
 
     def generate_check_file(self):
-        print("1"*100)
         """
-        Генерация файла проверки во вторник.
-        Сохраняет файл и логирует действия.
+        Генерация двух файлов проверки: для ГПХ и для остальных организаций с полной информацией.
         """
         try:
-            # Получаем данные для перепроверки
-            people_for_recheck = self.db_manager.transfer_to_accrtable()
-            print(people_for_recheck)
+            print("[INFO] Генерация файлов проверки началась.")
+
+            # Получаем полную информацию о сотрудниках для проверки
+            people_for_recheck = self.db_manager.get_people_for_recheck_full()
 
             if people_for_recheck:
                 today_date = datetime.now().strftime('%d-%m-%Y')
-                file_name = f"Запрос на проверку_{today_date}.xlsx"
 
+                # Разделяем данные по организациям
+                gph_data = [p for p in people_for_recheck if "ГПХ" in (p['organization'] or "").upper()]
+                other_data = [p for p in people_for_recheck if "ГПХ" not in (p['organization'] or "").upper()]
 
-                # Формируем данные для файла
-                data = [
-                    {
-                        "Фамилия": p[1],
-                        "Имя": p[2],
-                        "Отчество": p[3] or '',
-                        "Дата рождения": p[4].strftime('%d.%m.%Y'),
-                        "Организация": p[5],
-                    }
-                    for p in people_for_recheck
-                ]
+                # Генерация файла для ГПХ
+                if gph_data:
+                    gph_file_name = f"Запрос на проверку_ГПХ_{today_date}.xlsx"
+                    gph_df = pd.DataFrame([
+                        {
+                            "Фамилия": p['surname'],
+                            "Имя": p['name'],
+                            "Отчество": p['middle_name'] or '',
+                            "Дата рождения": p['birth_date'].strftime('%d.%m.%Y') if isinstance(p['birth_date'],
+                                                                                                date) else '',
+                            "Место рождения": p['birth_place'],
+                            "Регистрация": p['registration'],
+                            "Организация": p['organization']
+                        }
+                        for p in gph_data
+                    ])
+                    self.file_manager.saveFile(gph_df, gph_file_name)
+                    print(f"[INFO] Файл для ГПХ успешно сгенерирован: {gph_file_name}")
+                else:
+                    print("[INFO] Нет данных для ГПХ.")
 
-                # Создаем DataFrame и сохраняем файл
-                df = pd.DataFrame(data)
-                self.file_manager.saveFile(df, file_name)
-
-                # Логируем транзакции
-                for person in people_for_recheck:
-                    self.db_manager.log_transaction(person[0], "Generated Recheck File")
-
-                print(f"Файл проверки успешно сгенерирован: {file_name}")
+                # Генерация файла для остальных организаций
+                if other_data:
+                    other_file_name = f"Запрос на проверку_Другие_{today_date}.xlsx"
+                    other_df = pd.DataFrame([
+                        {
+                            "Фамилия": p['surname'],
+                            "Имя": p['name'],
+                            "Отчество": p['middle_name'] or '',
+                            "Дата рождения": p['birth_date'].strftime('%d.%m.%Y') if isinstance(p['birth_date'],
+                                                                                                date) else '',
+                            "Место рождения": p['birth_place'],
+                            "Регистрация": p['registration'],
+                            "Организация": p['organization']
+                        }
+                        for p in other_data
+                    ])
+                    self.file_manager.saveFile(other_df, other_file_name)
+                    print(f"[INFO] Файл для других организаций успешно сгенерирован: {other_file_name}")
+                else:
+                    print("[INFO] Нет данных для других организаций.")
             else:
-                print("Нет данных для генерации файла проверки.")
-        except Exception as e:
-            print(f"Ошибка при генерации файла проверки: {e}")
+                print("[INFO] Нет данных для генерации файлов проверки.")
 
+        except Exception as e:
+            print(f"[ERROR] Ошибка при генерации файлов проверки: {e}\n{traceback.format_exc()}")
 
     def manageBlacklist(self):
         """Управление статусом 'в ЧС'."""
@@ -249,13 +396,20 @@ class AccreditationApp(QWidget):
         position = self.tableWidget.item(selected_row, 8).text()
 
         try:
-            status_changed = self.db_manager.toggle_blacklist(surname, name, middle_name, birth_date, birth_place, registration, organization, position)
+            status_changed = self.db_manager.toggle_blacklist(surname, name, middle_name, birth_date, birth_place,
+                                                              registration, organization, position)
+            print(status_changed, surname, name, middle_name, birth_date)
             if status_changed == "добавлен в черный список":
                 self.logMessage(f"{surname} {name} {middle_name} добавлен в черный список.")
+                self.df.at[selected_row, 'Статус'] = "В черном списке"
+                self.displayTable()
             elif status_changed == "убран из черного списка":
                 self.logMessage(f"{surname} {name} {middle_name} убран из черного списка.")
+                self.df.at[selected_row, 'Статус'] = "Нужно проверить"
+                self.displayTable()
             elif not status_changed:
                 self.logMessage(f"Ошибка управления черным списком: {surname} {name} {middle_name} не изменён.")
 
         except Exception as e:
             self.logMessage(f"Ошибка управления черным списком: {e}")
+
