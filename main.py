@@ -1,8 +1,9 @@
+import os
 import sys
 from datetime import datetime
 from pytz import timezone
 
-from PyQt5.QtWidgets import QApplication
+from PyQt5.QtWidgets import QApplication, QLabel
 from ui import AccreditationApp
 from database_manager import DatabaseManager
 from scheduler import Scheduler
@@ -10,12 +11,13 @@ import threading
 
 
 db_config = {
-    "db_name": "bap",
-    "user": "postgres",
-    "password": "1234",  # Обратите внимание, что пароли в коде лучше хранить через переменные окружения!
-    "host": "localhost",
-    "port": 5432
+    'db_name': os.getenv('DB_NAME', 'bap'),
+    'user': os.getenv('DB_USER', 'postgres'),
+    'password': os.getenv('DB_PASSWORD', '1234'),
+    'host': os.getenv('DB_HOST', 'localhost'),
+    'port': int(os.getenv('DB_PORT', 5432)),
 }
+
 
 
 def start_scheduler():
@@ -41,3 +43,4 @@ if __name__ == "__main__":
     ex.show()
 
     sys.exit(app.exec_())
+

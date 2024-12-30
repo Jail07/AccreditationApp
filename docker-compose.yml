@@ -12,12 +12,16 @@ services:
       - DB_PASSWORD=1234
       - DB_HOST=db
       - DB_PORT=5432
+      - DISPLAY=${DISPLAY}
     ports:
-      - "8000:8000"  # Пробрасываем порт, если нужно
+      - "8000:8000"
     depends_on:
       - db
     restart: always
+    entrypoint: ["./wait-for-it.sh", "db:5432", "--", "python", "main.py"]
 
+    volumes:
+      - /tmp/.X11-unix:/tmp/.X11-unix
 
   db:
     image: postgres:14
