@@ -86,12 +86,14 @@ class Scheduler:
         try:
             print(f"[INFO] Сотруднии проверены на срок аккредитации.")
             expired_employees = self.db_manager.get_expired_accreditations()
+            print(expired_employees)
 
             for employee in expired_employees:
-                self.db_manager.update_accreditation_status(employee['id'], "не активен")
+                self.db_manager.update_accreditation_status(employee[0], "не активен")
                 self.db_manager.add_to_td(employee)
-                self.db_manager.log_transaction(employee['id'], "Перенесён в TD из-за истечения срока аккредитации")
-                print(f"[INFO] Сотрудник {employee['surname']} перенесён в TD.")
+                self.db_manager.log_transaction(employee[0], "Перенесён в TD из-за истечения срока аккредитации")
+                print(f"[INFO] Сотрудник {employee[1]} {employee[2]} {employee[3] if employee[3] else ''} перенесён в TD.")
+            print("закончилась")
         except Exception as e:
             print(f"[ERROR] Ошибка проверки срока аккредитации: {e}\n{traceback.format_exc()}")
 
@@ -117,9 +119,9 @@ class Scheduler:
         """
         try:
             print("[DEBUG] Запуск планировщика.")
-            self.scheduler.add_job(self.check_accreditation_expiry, "cron", hour=22, minute=23)
-            self.scheduler.add_job(self.generate_recheck_file, "cron", day_of_week="mon", hour=23, minute=21)
-            self.scheduler.add_job(self.transfer_from_td_to_accrtable, "cron", day_of_week="mon", hour=23, minute=22)
+            self.scheduler.add_job(self.check_accreditation_expiry, "cron", hour=0)
+            self.scheduler.add_job(self.generate_recheck_file, "cron", day_of_week="thu", hour=10)
+            self.scheduler.add_job(self.transfer_from_td_to_accrtable, "cron", day_of_week="thu", hour=13)
             self.scheduler.start()
             print("[DEBUG] Планировщик успешно запущен. Задачи добавлены.")
         except Exception as e:

@@ -56,7 +56,7 @@ class DatabaseManager:
                 birth_date DATE NOT NULL,
                 birth_place TEXT,
                 registration TEXT,
-                organization TEXT NOT NULL,
+                organization TEXT,
                 position TEXT,
                 added_date TIMESTAMP NOT NULL DEFAULT NOW()
             );
@@ -236,58 +236,66 @@ class DatabaseManager:
         try:
             # Проверяем, есть ли сотрудник в AccrTable
             self.cursor.execute("""
-            SELECT id FROM AccrTable
+            SELECT id, status, birth_place, registration, organization, position
+            FROM AccrTable
             WHERE surname = %s AND name = %s AND middle_name = %s AND birth_date = %s;
             """, (surname, name, middle_name, birth_date))
             result = self.cursor.fetchone()
 
             if result:
-                # Если сотрудник есть в AccrTable, проверяем его статус black_list в mainTable
+                # Сотрудник найден в AccrTable
                 person_id = result[0]
+                current_status = result[1]
+                birth_place = result[2]
+                registration = result[3]
+                organization = result[4]
+                position = result[5]
+
+                # Проверяем флаг black_list в mainTable
                 self.cursor.execute("""
                 SELECT black_list FROM mainTable WHERE person_id = %s;
                 """, (person_id,))
                 blacklist_status = self.cursor.fetchone()
 
-                if blacklist_status is not None:
-                    if blacklist_status[0]:  # Сотрудник в черном списке, удаляем из черного списка
-                        # Меняем статус на "не активен" в AccrTable
-                        self.cursor.execute("""
-                        UPDATE AccrTable SET status = 'не активен' WHERE id = %s;
-                        """, (person_id,))
+                if blacklist_status and blacklist_status[0]:
+                    # Сотрудник в черном списке, снимаем его с черного списка
+                    # Обновляем статус в AccrTable на "не активен"
+                    self.cursor.execute("""
+                    UPDATE AccrTable SET status = 'не активен' WHERE id = %s;
+                    """, (person_id,))
 
-                        # Обновляем mainTable, убирая флаг black_list
-                        self.cursor.execute("""
-                        UPDATE mainTable SET black_list = FALSE WHERE person_id = %s;
-                        """, (person_id,))
+                    # Убираем флаг black_list в mainTable
+                    self.cursor.execute("""
+                    UPDATE mainTable SET black_list = FALSE WHERE person_id = %s;
+                    """, (person_id,))
 
-                        # Добавляем сотрудника в TD
-                        self.cursor.execute("""
-                        INSERT INTO TD (surname, name, middle_name, birth_date, birth_place, registration, organization, position)
-                        VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
-                        ON CONFLICT DO NOTHING;
-                        """, (
-                            surname, name, middle_name, birth_date, birth_place, registration, organization, position))
+                    # Добавляем сотрудника в TD
+                    self.cursor.execute("""
+                    INSERT INTO TD (surname, name, middle_name, birth_date, birth_place, registration, organization, position)
+                    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+                    ON CONFLICT DO NOTHING;
+                    """, (surname, name, middle_name, birth_date, birth_place, registration, organization, position))
 
-                        # Записываем операцию в Records
-                        self.log_transaction(person_id,
-                                             "Убран из черного списка, статус изменен на 'не активен', добавлен в TD")
+                    # Записываем операцию в Records
+                    self.log_transaction(person_id,
+                                         "Убран из черного списка, статус изменен на 'не активен', добавлен в TD")
 
-                        self.connection.commit()
-                        print(
-                            f"Сотрудник {surname} {name} {middle_name} убран из черного списка, статус изменен на 'не активен' и добавлен в TD.")
-                        return "убран из черного списка"
-                    else:  # Сотрудник не в черном списке, добавляем в черный список
-                        self.cursor.execute("""
-                        UPDATE mainTable SET black_list = TRUE WHERE person_id = %s;
-                        """, (person_id,))
+                    self.connection.commit()
+                    print(
+                        f"Сотрудник {surname} {name} {middle_name} убран из черного списка, статус изменен на 'не активен' и добавлен в TD.")
+                    return "убран из черного списка"
+                else:
+                    # Сотрудник не в черном списке, добавляем его в черный список
+                    self.cursor.execute("""
+                    UPDATE mainTable SET black_list = TRUE WHERE person_id = %s;
+                    """, (person_id,))
 
-                        # Записываем операцию в Records
-                        self.log_transaction(person_id, "Добавлен в черный список")
+                    # Записываем операцию в Records
+                    self.log_transaction(person_id, "Добавлен в черный список")
 
-                        self.connection.commit()
-                        print(f"Сотрудник {surname} {name} {middle_name} добавлен в черный список.")
-                        return "добавлен в черный список"
+                    self.connection.commit()
+                    print(f"Сотрудник {surname} {name} {middle_name} добавлен в черный список.")
+                    return "добавлен в черный список"
             else:
                 # Если сотрудника нет в AccrTable, добавляем его с black_list=True
                 print(f"Сотрудник {surname} {name} {middle_name} отсутствует в AccrTable. Добавляем.")
@@ -416,15 +424,16 @@ class DatabaseManager:
         """
         try:
             self.cursor.execute("""
-                SELECT 
-                    operation_date, 
-                    CONCAT_WS(' ', surname, name, middle_name) AS object,
-                    organization, 
-                    operation_type
-                FROM Records
-                JOIN MainTable ON Records.main_table_id = MainTable.id
-                WHERE CONCAT_WS(' ', surname, name, middle_name) = %s AND birth_date = %s;
-            """, (fio, birth_date))
+                    SELECT 
+                        r.operation_date,
+                        CONCAT_WS(' ', a.surname, a.name, a.middle_name) AS object,
+                        a.organization, 
+                        r.operation_type
+                    FROM Records r
+                    JOIN MainTable m ON r.person_id = m.id
+                    JOIN AccrTable a ON m.person_id = a.id
+                    WHERE CONCAT_WS(' ', a.surname, a.name, a.middle_name) = %s AND a.birth_date = %s;
+                """, (fio, birth_date))
             return self.cursor.fetchall()
         except Exception as e:
             print(f"Ошибка при получении записей сотрудника: {e}")
@@ -479,7 +488,7 @@ class DatabaseManager:
                 SELECT a.id
                 FROM AccrTable a
                 WHERE a.surname = %s AND a.name = %s AND a.middle_name = %s
-                  AND a.birth_date = %s AND a.status = 'в ожидании';
+                  AND a.birth_date = %s AND a.status = 'в ожидании' OR a.status = 'не активен';
                 """, (row['Фамилия'], row['Имя'], row.get('Отчество'), row['Дата рождения']))
                 result = self.cursor.fetchone()
                 if result:
@@ -506,6 +515,12 @@ class DatabaseManager:
                 INSERT INTO mainTable (person_id, start_accr, end_accr, black_list)
                 VALUES (%s, %s, %s, FALSE);
                 """, (person_id, start_date or datetime.now(), end_date))
+
+                self.cursor.execute("""
+                INSERT INTO Records (person_id, operation_date, operation_type)
+                VALUES (%s, %s, %s);
+                """, (person_id, start_date or datetime.now(), 'аккредитован'))
+
 
                 # Логируем действие
                 self.log_transaction(person_id, "Изменён статус на 'аккредитован'")

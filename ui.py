@@ -2,7 +2,7 @@ import traceback
 from datetime import datetime, date
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QPushButton, QFileDialog,
-    QTableWidget, QTableWidgetItem, QTextEdit, QLabel
+    QTableWidget, QTableWidgetItem, QTextEdit, QLabel, QMessageBox
 )
 from apscheduler.schedulers.background import BackgroundScheduler
 from PyQt5.QtGui import QColor
@@ -161,6 +161,21 @@ class AccreditationApp(QWidget):
             self.resultTable.setItem(i, 2, QTableWidgetItem(status))
         self.logMessage(f"Найдено {len(results)} совпадений для '{search_term}'.")
 
+    def showConfirmationDialog(self, message):
+        """
+        Показать диалог подтверждения.
+        Возвращает True, если пользователь подтвердил действие.
+        """
+        confirmation_dialog = QMessageBox(self)
+        confirmation_dialog.setIcon(QMessageBox.Question)
+        confirmation_dialog.setWindowTitle("Подтверждение")
+        confirmation_dialog.setText(message)
+        confirmation_dialog.setStandardButtons(QMessageBox.Yes | QMessageBox.No)
+        confirmation_dialog.setDefaultButton(QMessageBox.No)
+
+        response = confirmation_dialog.exec_()
+        return response == QMessageBox.Yes
+
     def generateEmployeeRecord(self):
         """
         Генерация записи сотрудника.
@@ -172,6 +187,8 @@ class AccreditationApp(QWidget):
 
         fio = self.resultTable.item(selected_row, 0).text()
         birth_date = self.resultTable.item(selected_row, 1).text()
+        print(fio)
+        print(birth_date)
 
         # Получение записей сотрудника
         records = self.db_manager.get_employee_records(fio, birth_date)
@@ -295,6 +312,11 @@ class AccreditationApp(QWidget):
             self.logMessage("Ошибка: Данные не загружены!")
             return
 
+        # Диалог подтверждения
+        if not self.showConfirmationDialog("Вы уверены, что сотрудники аккредитованы и данные корректны?"):
+            self.logMessage("Действие отменено пользователем.")
+            return
+
         try:
             valid_ids = self.db_manager.validate_accreditation_file(self.df)
             if not valid_ids:
@@ -382,34 +404,70 @@ class AccreditationApp(QWidget):
 
     def manageBlacklist(self):
         """Управление статусом 'в ЧС'."""
-        selected_row = self.tableWidget.currentRow()
-        if selected_row == -1:
-            self.logMessage("Ошибка: Не выбрана строка для управления черным списком.")
-            return
-        surname = self.tableWidget.item(selected_row, 1).text()
-        name = self.tableWidget.item(selected_row, 2).text()
-        middle_name = self.tableWidget.item(selected_row, 3).text()
-        birth_date = self.tableWidget.item(selected_row, 4).text()
-        birth_place = self.tableWidget.item(selected_row, 5).text()
-        registration = self.tableWidget.item(selected_row, 6).text()
-        organization = self.tableWidget.item(selected_row, 7).text()
-        position = self.tableWidget.item(selected_row, 8).text()
+        if self.resultTable.rowCount() > 0 and self.resultTable.currentRow() != -1:
+            # Если выбран сотрудник из таблицы поиска
+            selected_row = self.resultTable.currentRow()
+            surname = self.resultTable.item(selected_row, 0).text().split()[0]
+            name = self.resultTable.item(selected_row, 0).text().split()[1]
+            middle_name = self.resultTable.item(selected_row, 0).text().split()[2] if len(
+                self.resultTable.item(selected_row, 0).text().split()) > 2 else None
+            birth_date = self.resultTable.item(selected_row, 1).text()
 
-        try:
-            status_changed = self.db_manager.toggle_blacklist(surname, name, middle_name, birth_date, birth_place,
-                                                              registration, organization, position)
-            print(status_changed, surname, name, middle_name, birth_date)
-            if status_changed == "добавлен в черный список":
-                self.logMessage(f"{surname} {name} {middle_name} добавлен в черный список.")
-                self.df.at[selected_row, 'Статус'] = "В черном списке"
-                self.displayTable()
-            elif status_changed == "убран из черного списка":
-                self.logMessage(f"{surname} {name} {middle_name} убран из черного списка.")
-                self.df.at[selected_row, 'Статус'] = "Нужно проверить"
-                self.displayTable()
-            elif not status_changed:
-                self.logMessage(f"Ошибка управления черным списком: {surname} {name} {middle_name} не изменён.")
+            # Подтверждение
+            if not self.showConfirmationDialog(
+                    f"Вы уверены, что хотите изменить статус сотрудника {surname} {name} {middle_name}?"):
+                self.logMessage("Действие отменено пользователем.")
+                return
 
-        except Exception as e:
-            self.logMessage(f"Ошибка управления черным списком: {e}")
+            try:
+                status_changed = self.db_manager.toggle_blacklist(surname, name, middle_name, birth_date, None, None,
+                                                                  None, None)
+                if status_changed == "добавлен в черный список":
+                    self.logMessage(f"{surname} {name} {middle_name} добавлен в черный список.")
+                elif status_changed == "убран из черного списка":
+                    self.logMessage(f"{surname} {name} {middle_name} убран из черного списка.")
+                elif not status_changed:
+                    self.logMessage(f"Ошибка управления черным списком: {surname} {name} {middle_name} не изменён.")
+            except Exception as e:
+                self.logMessage(f"Ошибка управления черным списком: {e}")
+
+
+        elif self.tableWidget.rowCount() > 0 and self.tableWidget.currentRow() != -1:
+            selected_row = self.tableWidget.currentRow()
+            if selected_row == -1:
+                self.logMessage("Ошибка: Не выбрана строка для управления черным списком.")
+                return
+            surname = self.tableWidget.item(selected_row, 1).text()
+            name = self.tableWidget.item(selected_row, 2).text()
+            middle_name = self.tableWidget.item(selected_row, 3).text()
+            birth_date = self.tableWidget.item(selected_row, 4).text()
+            birth_place = self.tableWidget.item(selected_row, 5).text()
+            registration = self.tableWidget.item(selected_row, 6).text()
+            organization = self.tableWidget.item(selected_row, 7).text()
+            position = self.tableWidget.item(selected_row, 8).text()
+
+            # Диалог подтверждения
+            if not self.showConfirmationDialog(
+                    f"Вы уверены, что хотите изменить статус сотрудника {surname} {name} {middle_name}?"):
+                self.logMessage("Действие отменено пользователем.")
+                return
+
+            try:
+                status_changed = self.db_manager.toggle_blacklist(surname, name, middle_name, birth_date, birth_place,
+                                                                  registration, organization, position)
+                print(status_changed, surname, name, middle_name, birth_date)
+                if status_changed == "добавлен в черный список":
+                    self.logMessage(f"{surname} {name} {middle_name} добавлен в черный список.")
+                    self.df.at[selected_row, 'Статус'] = "В черном списке"
+                    self.displayTable()
+                elif status_changed == "убран из черного списка":
+                    self.logMessage(f"{surname} {name} {middle_name} убран из черного списка.")
+                    self.df.at[selected_row, 'Статус'] = "Нужно проверить"
+                    self.displayTable()
+                elif not status_changed:
+                    self.logMessage(f"Ошибка управления черным списком: {surname} {name} {middle_name} не изменён.")
+            except Exception as e:
+                self.logMessage(f"Ошибка управления черным списком: {e}")
+        else:
+            self.logMessage("Ошибка: Не выбран сотрудник для управления черным списком.")
 
