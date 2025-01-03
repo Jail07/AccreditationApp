@@ -11,12 +11,13 @@ import threading
 
 
 db_config = {
-    'db_name': os.getenv('DB_NAME', 'bap'),
-    'user': os.getenv('DB_USER', 'postgres'),
-    'password': os.getenv('DB_PASSWORD', '1234'),
-    'host': os.getenv('DB_HOST', 'localhost'),
-    'port': int(os.getenv('DB_PORT', 5432)),
+    "db_name": "bap",
+    "user": "postgres",
+    "password": "1234",
+    "host": "db",  # Имя сервиса в Docker Compose
+    "port": 5432
 }
+
 
 
 

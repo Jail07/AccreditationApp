@@ -7,8 +7,19 @@ WORKDIR /app
 # Копируем файлы проекта
 COPY . .
 
+# Устанавливаем зависимости Python
+RUN pip install --upgrade pip && pip install --default-timeout=100 --no-cache-dir -r requirements.txt
+
 # Устанавливаем системные зависимости
 RUN apt-get update && apt-get install -y \
+    git \
+    x11-apps \
+    libx11-6 \
+    libgl1-mesa-glx \
+    libglib2.0-0 \
+    libsm6 \
+    libxrender1 \
+    libxext6 \
     libgl1-mesa-dev \
     libxkbcommon-x11-0 \
     libglib2.0-0 \
@@ -36,9 +47,6 @@ RUN mkdir -p /tmp/runtime-root && chown appuser:appuser /tmp/runtime-root && chm
 
 # Переключаемся на пользователя appuser
 USER appuser
-
-# Устанавливаем зависимости Python
-RUN ./install_dependencies.sh
 
 # Устанавливаем переменные среды
 ENV QT_QPA_PLATFORM=offscreen
