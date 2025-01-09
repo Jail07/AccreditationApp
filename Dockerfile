@@ -1,60 +1,31 @@
-# Используем базовый образ с Python
-FROM python:3.11-slim
+FROM ubuntu:22.04
 
-# Устанавливаем рабочую директорию
+# Установка необходимых зависимостей
+ENV DEBIAN_FRONTEND=noninteractive
+
+RUN apt-get update && apt-get install -y \
+    python3 python3-pip \
+    libqt5widgets5 libqt5gui5 libqt5core5a \
+     xvfb x11vnc tzdata && \
+    rm -rf /var/lib/apt/lists/*
+
+# Создать каталог для XDG_RUNTIME_DIR
+RUN mkdir -p /tmp/runtime-root && chmod 700 /tmp/runtime-root
+
+
 WORKDIR /app
 
-# Копируем файлы проекта
+
 COPY . .
 
-# Устанавливаем зависимости Python
-RUN pip install --upgrade pip && pip install --default-timeout=100 --no-cache-dir -r requirements.txt
+RUN pip install --no-cache-dir -r requirements.txt
 
-# Устанавливаем системные зависимости
-RUN apt-get update && apt-get install -y \
-    git \
-    x11-apps \
-    libx11-6 \
-    libgl1-mesa-glx \
-    libglib2.0-0 \
-    libsm6 \
-    libxrender1 \
-    libxext6 \
-    libgl1-mesa-dev \
-    libxkbcommon-x11-0 \
-    libglib2.0-0 \
-    libxcb-xinerama0 \
-    libxcb-randr0 \
-    libx11-xcb1 \
-    libxcb-util1 \
-    libxcb-render0 \
-    libxcb-shape0 \
-    libxcb-shm0 \
-    libfreetype6 \
-    libxcb1 \
-    libqt5gui5 \
-    libqt5widgets5 \
-    libqt5core5a \
-    libqt5dbus5 \
-    libxcb-glx0 \
-    && rm -rf /var/lib/apt/lists/*
-
-# Создаем пользователя с UID 1000
-RUN useradd -m -u 1000 appuser
-
-# Создаем runtime-директорию и назначаем правильные права
-RUN mkdir -p /tmp/runtime-root && chown appuser:appuser /tmp/runtime-root && chmod 700 /tmp/runtime-root
-
-# Переключаемся на пользователя appuser
-USER appuser
-
-# Устанавливаем переменные среды
-ENV QT_QPA_PLATFORM=offscreen
+# Установить переменные окружения
+ENV DISPLAY=:99
 ENV XDG_RUNTIME_DIR=/tmp/runtime-root
-ENV TZ=Europe/Moscow
+ENV TZ=Asia/Bishkek
 
-# Открываем порт для приложения
-EXPOSE 8000
+# Создание VNC пароля
+RUN mkdir -p /root/.vnc && x11vnc -storepasswd AccrApp /root/.vnc/passwd
 
-# Запускаем приложение
-CMD ["python", "main.py"]
+CMD ["sh", "-c", "rm -f /tmp/.X99-lock && Xvfb :99 -screen 0 1024x768x24 & x11vnc -display :99 -forever -shared -rfbport 5900 -rfbauth /root/.vnc/passwd & python3 main.py"]

@@ -2,7 +2,7 @@ import traceback
 from datetime import datetime, date
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QPushButton, QFileDialog,
-    QTableWidget, QTableWidgetItem, QTextEdit, QLabel, QMessageBox
+    QTableWidget, QTableWidgetItem, QTextEdit, QLabel, QMessageBox, QApplication
 )
 from apscheduler.schedulers.background import BackgroundScheduler
 from PyQt5.QtGui import QColor
@@ -32,6 +32,10 @@ class AccreditationApp(QWidget):
 
     def initUI(self):
         self.setWindowTitle('Обработка аккредитации')
+
+        # Устанавливаем размеры окна на полный экран
+        screen_geometry = QApplication.primaryScreen().availableGeometry()
+        self.setGeometry(screen_geometry)
 
         # Основной горизонтальный макет
         main_layout = QHBoxLayout()
@@ -128,13 +132,22 @@ class AccreditationApp(QWidget):
                 item = QTableWidgetItem(value)
                 self.tableWidget.setItem(i, j, item)
 
-
     def loadFile(self):
-        file_name = self.file_manager.openFile(self)
-        if file_name:
-            self.df = pd.read_excel(file_name)
-            self.displayTable()
-            self.logText.clear()
+        # Открыть диалог для выбора файла
+        file_path, _ = QFileDialog.getOpenFileName(
+            self,
+            "Выберите файл для проверки",
+            "",  # Стартовая директория (пустая строка указывает на текущую)
+            "Excel Files (*.xlsx *.xls);;All Files (*)"  # Фильтр форматов
+        )
+
+        if file_path:  # Если файл был выбран
+            try:
+                self.df = pd.read_excel(file_path)
+                self.displayTable()
+                self.logMessage(f"Файл успешно загружен: {file_path}")
+            except Exception as e:
+                self.logMessage(f"Ошибка при загрузке файла: {e}")
 
     def searchData(self):
         """

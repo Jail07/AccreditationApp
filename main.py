@@ -11,10 +11,10 @@ import threading
 
 
 db_config = {
-    "db_name": "bap",
+    "db_name": "accrapp",
     "user": "postgres",
     "password": "1234",
-    "host": "db",  # Имя сервиса в Docker Compose
+    "host": "localhost",  # Имя сервиса в Docker Compose
     "port": 5432
 }
 
