@@ -37,17 +37,5 @@ services:
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
-  web:
-    build:
-      context: .
-      dockerfile: Dockerfile
-    container_name: flask_web
-    environment:
-      - UPLOAD_FOLDER=/app/uploads
-    ports:
-      - "5000:5000"
-    volumes:
-      - ./uploads:/app/uploads  # Общая папка для загруженных файлов
-
 volumes:
   postgres_data:
