@@ -11,14 +11,12 @@ import threading
 
 
 db_config = {
-    "db_name": "accrapp",
-    "user": "postgres",
-    "password": "1234",
-    "host": "localhost",  # Имя сервиса в Docker Compose
-    "port": 5432
+    'db_name': os.getenv('DB_NAME', 'accr_db'),
+    'user': os.getenv('DB_USER', 'postgres'),
+    'password': os.getenv('DB_PASSWORD', '1234'),
+    'host': os.getenv('DB_HOST', 'db'),
+    'port': os.getenv('DB_PORT', 5432),
 }
-
-
 
 
 def start_scheduler():
@@ -27,7 +25,6 @@ def start_scheduler():
     """
     scheduler = Scheduler(db_config)
     scheduler.start()
-
 
 
 if __name__ == "__main__":
