@@ -53,5 +53,14 @@ install_dependencies
 clone_repository
 run_docker
 echo "Деплой завершён успешно!"
+# Проверка контейнеров после запуска
+echo "Проверяем состояние контейнеров..."
+docker ps -a
+
+if docker logs accr_app 2>&1 | grep -q "could not connect to display"; then
+    echo "Ошибка: Проблемы с Xvfb или xcb."
+    exit 1
+fi
+
 # chmod +x deploy.sh
 # ./deploy.sh

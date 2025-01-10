@@ -6,12 +6,15 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y \
     python3 python3-pip \
     libqt5widgets5 libqt5gui5 libqt5core5a \
+    libglu1-mesa libxrender1 libxi6 libxrandr-dev \
     libxcb-xinerama0 \
     libxcb1 \
     libx11-xcb1 \
     libgl1-mesa-glx \
     xorg-dev \
-     xvfb x11vnc tzdata && \
+    libxcb-render-util0 \
+    libxcb-shm0 \
+    xvfb x11vnc tzdata && \
     rm -rf /var/lib/apt/lists/*
 
 # Создать каталог для XDG_RUNTIME_DIR
@@ -21,7 +24,6 @@ RUN mkdir -p /tmp/runtime-root && chmod 700 /tmp/runtime-root
 RUN mkdir -p /root/.vnc && x11vnc -storepasswd AccrApp /root/.vnc/passwd
 
 WORKDIR /app
-
 
 COPY . .
 
