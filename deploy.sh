@@ -43,7 +43,7 @@ run_docker() {
     cd "$APP_DIR"
     docker-compose down
     docker-compose build
-    docker-compose up -d
+    docker-compose up
     echo "Docker Compose запущен."
 }
 
