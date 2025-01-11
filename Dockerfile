@@ -15,7 +15,6 @@ RUN apt-get update && apt-get install -y \
     xorg-dev \
     libxcb-render-util0 \
     libxcb-shm0 \
-    qt5-default \
     qtbase5-dev \
     qttools5-dev-tools \
     qt5-qmake \

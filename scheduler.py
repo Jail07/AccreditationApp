@@ -1,7 +1,6 @@
 import pandas as pd
 from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime, date, timedelta
-from pytz import timezone
 import traceback
 
 from database_manager import DatabaseManager

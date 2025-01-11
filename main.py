@@ -1,7 +1,6 @@
 import os
 import sys
-from datetime import datetime
-from pytz import timezone
+
 
 from PyQt5.QtWidgets import QApplication, QLabel
 from ui import AccreditationApp
@@ -14,7 +13,7 @@ db_config = {
     'db_name': os.getenv('DB_NAME', 'accr_db'),
     'user': os.getenv('DB_USER', 'postgres'),
     'password': os.getenv('DB_PASSWORD', '1234'),
-    'host': os.getenv('DB_HOST', 'db'),
+    'host': os.getenv('DB_HOST', 'localhost'),
     'port': os.getenv('DB_PORT', 5432),
 }
 
