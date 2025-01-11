@@ -1,7 +1,7 @@
 FROM ubuntu:22.04
 
 # Установка необходимых зависимостей
-ENV DEBIAN_FRONTEND=noninteractive  # Отключение интерактивного ввода
+ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y \
     python3 python3-pip \
     libqt5widgets5 libqt5gui5 libqt5core5a \
