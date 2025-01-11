@@ -1,17 +1,17 @@
 FROM ubuntu:22.04
 
 # Установка необходимых зависимостей
+ENV DEBIAN_FRONTEND=noninteractive  # Отключение интерактивного ввода
 RUN apt-get update && apt-get install -y \
     python3 python3-pip \
-    libqt5widgets5 libqt5gui5 libqt5core5a xvfb && \
+    libqt5widgets5 libqt5gui5 libqt5core5a \
+    xvfb x11vnc tzdata && \
     rm -rf /var/lib/apt/lists/*
 
 # Создать каталог для XDG_RUNTIME_DIR
 RUN mkdir -p /tmp/runtime-root && chmod 700 /tmp/runtime-root
 
-
 WORKDIR /app
-
 
 COPY . .
 
