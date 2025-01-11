@@ -15,22 +15,14 @@ RUN apt-get update && apt-get install -y \
     xorg-dev \
     libxcb-render-util0 \
     libxcb-shm0 \
+    qt5-default \
+    qtbase5-dev \
+    qttools5-dev-tools \
+    qt5-qmake \
+    libqt5svg5-dev \
+    libqt5x11extras5-dev \
     xvfb x11vnc tzdata && \
     rm -rf /var/lib/apt/lists/*
-
-# Копируем архив Qt в контейнер
-COPY qt-everywhere-opensource-src-5.15.3.tar.xz /root/
-
-# Установка Qt 5.15.3
-RUN cd /root && \
-    tar -xf qt-everywhere-opensource-src-5.15.3.tar.xz && \
-    cd qt-everywhere-src-5.15.3 && \
-    python3 qtwebengine/tools/scripts/init-repository.py && \
-    ./configure -prefix /usr/local/qt5 && \
-    make -j$(nproc) && \
-    make install && \
-    rm -rf /root/qt-everywhere-src-5.15.3 /root/qt-everywhere-opensource-src-5.15.3.tar.xz
-
 
 # Создать каталог для XDG_RUNTIME_DIR
 RUN mkdir -p /tmp/runtime-root && chmod 700 /tmp/runtime-root
@@ -39,7 +31,6 @@ RUN mkdir -p /tmp/runtime-root && chmod 700 /tmp/runtime-root
 RUN mkdir -p /root/.vnc && x11vnc -storepasswd AccrApp /root/.vnc/passwd
 
 # Установить переменные окружения
-ENV PATH="/usr/local/qt5/bin:$PATH"
 ENV DISPLAY=:99
 ENV QT_QPA_PLATFORM=xcb
 ENV QT_PLUGIN_PATH=/usr/local/Qt-5.15.3/plugins
