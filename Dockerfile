@@ -19,17 +19,17 @@ RUN apt-get update && apt-get install -y \
     rm -rf /var/lib/apt/lists/*
 
 # Копируем архив Qt в контейнер
-COPY tqtc-qt5-everywhere-opensource-src-5.15.3.tar.xz /root/
+COPY qt-everywhere-opensource-src-5.15.3.tar.xz /root/
 
 # Установка Qt 5.15.3
 RUN cd /root && \
-    tar -xf tqtc-qt5-everywhere-opensource-src-5.15.3.tar.xz && \
-    cd tqtc-qt5-everywhere-src-5.15.3 && \
-    perl init-repository && \
+    tar -xf qt-everywhere-opensource-src-5.15.3.tar.xz && \
+    cd qt-everywhere-src-5.15.3 && \
+    python3 qtwebengine/tools/scripts/init-repository.py && \
     ./configure -prefix /usr/local/qt5 && \
     make -j$(nproc) && \
     make install && \
-    rm -rf /root/tqtc-qt5-everywhere-src-5.15.3 /root/tqtc-qt5-everywhere-opensource-src-5.15.3.tar.xz
+    rm -rf /root/qt-everywhere-src-5.15.3 /root/qt-everywhere-opensource-src-5.15.3.tar.xz
 
 
 # Создать каталог для XDG_RUNTIME_DIR
