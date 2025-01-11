@@ -25,4 +25,4 @@ ENV TZ=Asia/Bishkek
 # Установить и настроить VNC
 RUN mkdir -p /root/.vnc && x11vnc -storepasswd AccrApp /root/.vnc/passwd
 
-CMD ["sh", "-c", "rm -f /tmp/.X99-lock && Xvfb :99 -screen 0 1024x768x24 & x11vnc -display :99 -forever -shared -rfbport 5900 -rfbauth /root/.vnc/passwd & python3.11 main.py"]
+CMD ["sh", "-c", "rm -f /tmp/.X99-lock && Xvfb :99 -screen 0 1024x768x24 & x11vnc -display :99 -forever -shared -rfbport 5900 -rfbauth /root/.vnc/passwd & python3 main.py"]
