@@ -30,18 +30,18 @@ RUN apt-get update && apt-get install -y \
     xvfb x11vnc tzdata && \
     rm -rf /var/lib/apt/lists/*
 
-# Копируем архив Qt в контейнер
-COPY qt-everywhere-opensource-src-5.15.3.tar.xz /root/
-
-# Установка Qt 5.15.3
-RUN cd /root && \
-    tar -xf qt-everywhere-opensource-src-5.15.3.tar.xz && \
-    cd qt-everywhere-src-5.15.3 && \
-    python2 qtwebengine/tools/scripts/init-repository.py && \
-    ./configure -prefix /usr/local/qt5.15.3 && \
-    make -j$(nproc) && \
-    make install && \
-    rm -rf /root/qt-everywhere-src-5.15.3 /root/qt-everywhere-opensource-src-5.15.3.tar.xz
+## Копируем архив Qt в контейнер
+#COPY qt-everywhere-opensource-src-5.15.3.tar.xz /root/
+#
+## Установка Qt 5.15.3
+#RUN cd /root && \
+#    tar -xf qt-everywhere-opensource-src-5.15.3.tar.xz && \
+#    cd qt-everywhere-src-5.15.3 && \
+#    python2 qtwebengine/tools/scripts/init-repository.py && \
+#    ./configure -prefix /usr/local/qt5.15.3 && \
+#    make -j$(nproc) && \
+#    make install && \
+#    rm -rf /root/qt-everywhere-src-5.15.3 /root/qt-everywhere-opensource-src-5.15.3.tar.xz
 
 # Создать каталог для XDG_RUNTIME_DIR
 RUN mkdir -p /tmp/runtime-root && chmod 700 /tmp/runtime-root
@@ -52,8 +52,8 @@ RUN mkdir -p /root/.vnc && x11vnc -storepasswd AccrApp /root/.vnc/passwd
 # Установить переменные окружения
 ENV DISPLAY=:99
 ENV QT_QPA_PLATFORM=xcb
-ENV QT_PLUGIN_PATH=/usr/local/Qt-5.15.3/plugins
-ENV LD_LIBRARY_PATH=/usr/local/Qt-5.15.3/lib
+#ENV QT_PLUGIN_PATH=/usr/local/Qt-5.15.3/plugins
+#ENV LD_LIBRARY_PATH=/usr/local/Qt-5.15.3/lib
 ENV XDG_RUNTIME_DIR=/tmp/runtime-root
 ENV TZ=Asia/Bishkek
 
