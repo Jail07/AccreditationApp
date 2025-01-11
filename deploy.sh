@@ -62,5 +62,7 @@ if docker logs accr_app 2>&1 | grep -q "could not connect to display"; then
     exit 1
 fi
 
-# chmod +x deploy.sh
+# На сервере Ubuntu 22.04 загружаете файл deploy.sh, после вводите команду:
+#chmod +x deploy.sh
+# И запускаете программу, остальное она сама сделает
 # ./deploy.sh

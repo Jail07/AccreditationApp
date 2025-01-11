@@ -19,7 +19,7 @@ class FileManager:
         save_path, _ = QFileDialog.getSaveFileName(
             self,
             "Сохранить файл как",
-            "/app/uploads",  # Стартовая директория
+            "/uploads",  # Стартовая директория
             "Excel Files (*.xlsx);;All Files (*)"  # Фильтр форматов
         )
 
