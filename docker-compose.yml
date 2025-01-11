@@ -16,7 +16,6 @@ services:
       - TZ=Asia/Bishkek
     ports:
       - "5900:5900"
-    entrypoint: ["./wait-for-it.sh", "db:5432", "--", "python3", "main.py" ]
     volumes:
       - /tmp/.X11-unix:/tmp/.X11-unix
       - ./uploads:/app/uploads
