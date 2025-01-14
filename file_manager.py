@@ -1,4 +1,3 @@
-import pandas as pd
 from PyQt5.QtWidgets import QFileDialog
 
 
@@ -15,15 +14,14 @@ class FileManager:
             self.logMessage("Нет данных для сохранения.")
             return
 
-        # Открыть диалог для выбора пути сохранения
         save_path, _ = QFileDialog.getSaveFileName(
             self,
             "Сохранить файл как",
-            "/uploads",  # Стартовая директория
-            "Excel Files (*.xlsx);;All Files (*)"  # Фильтр форматов
+            "/uploads",
+            "Excel Files (*.xlsx);;All Files (*)"
         )
 
-        if save_path:  # Если пользователь выбрал путь
+        if save_path:
             try:
                 self.df.to_excel(save_path, index=False)
                 self.logMessage(f"Файл успешно сохранен: {save_path}")

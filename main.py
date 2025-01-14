@@ -19,19 +19,14 @@ db_config = {
 
 
 def start_scheduler():
-    """
-    Запускает планировщик в отдельном потоке.
-    """
     scheduler = Scheduler(db_config)
     scheduler.start()
 
 
 if __name__ == "__main__":
-    # Создаем поток для работы планировщика
     scheduler_thread = threading.Thread(target=start_scheduler, daemon=True)
     scheduler_thread.start()
 
-    # Основное приложение
     app = QApplication(sys.argv)
     db_manager = DatabaseManager(**db_config)
     db_manager.create_tables()

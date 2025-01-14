@@ -9,28 +9,22 @@ from file_manager import FileManager
 
 class Scheduler:
     def __init__(self, db_config):
-        self.scheduler = BackgroundScheduler(timezone="Asia/Bishkek")  # Установите вашу временную зону
+        self.scheduler = BackgroundScheduler(timezone="Asia/Bishkek")
         self.db_manager = DatabaseManager(**db_config)
         self.file_manager = FileManager()
 
     def generate_recheck_file(self):
-        """
-        Генерация двух файлов проверки: для ГПХ и для остальных организаций с полной информацией.
-        """
         try:
             print("[INFO] Генерация файлов проверки началась.")
 
-            # Получаем полную информацию о сотрудниках для проверки
             people_for_recheck = self.db_manager.get_people_for_recheck_full()
 
             if people_for_recheck:
                 today_date = datetime.now().strftime('%d-%m-%Y')
 
-                # Разделяем данные по организациям
                 gph_data = [p for p in people_for_recheck if "ГПХ" in (p['organization'] or "").upper()]
                 other_data = [p for p in people_for_recheck if "ГПХ" not in (p['organization'] or "").upper()]
 
-                # Генерация файла для ГПХ
                 if gph_data:
                     gph_file_name = f"Запрос на проверку_ГПХ_{today_date}.xlsx"
                     gph_df = pd.DataFrame([
@@ -51,7 +45,6 @@ class Scheduler:
                 else:
                     print("[INFO] Нет данных для ГПХ.")
 
-                # Генерация файла для остальных организаций
                 if other_data:
                     other_file_name = f"Запрос на проверку_Другие_{today_date}.xlsx"
                     other_df = pd.DataFrame([
@@ -78,10 +71,6 @@ class Scheduler:
             print(f"[ERROR] Ошибка при генерации файлов проверки: {e}\n{traceback.format_exc()}")
 
     def check_accreditation_expiry(self):
-        """
-        Проверяет срок аккредитации сотрудников каждый день.
-        Если срок истёк, статус меняется на 'не активен', а запись переносится в TD.
-        """
         try:
             print(f"[INFO] Сотруднии проверены на срок аккредитации.")
             expired_employees = self.db_manager.get_expired_accreditations()
@@ -97,9 +86,6 @@ class Scheduler:
             print(f"[ERROR] Ошибка проверки срока аккредитации: {e}\n{traceback.format_exc()}")
 
     def transfer_from_td_to_accrtable(self):
-        """
-        Переносит сотрудников из TD в accrtable со статусом 'в ожидании'.
-        """
         try:
             employees = self.db_manager.get_all_from_td_full()
             print(employees)
@@ -113,9 +99,6 @@ class Scheduler:
             print(f"[ERROR] Ошибка при переносе сотрудников из TD в accrtable: {e}\n{traceback.format_exc()}")
 
     def start(self):
-        """
-        Запуск планировщика.
-        """
         try:
             print("[DEBUG] Запуск планировщика.")
             self.scheduler.add_job(self.check_accreditation_expiry, "cron", hour=0)
@@ -127,9 +110,6 @@ class Scheduler:
             print(f"[ERROR] Ошибка при запуске планировщика: {e}\n{traceback.format_exc()}")
 
     def stop(self):
-        """
-        Останавливает планировщик.
-        """
         try:
             self.scheduler.shutdown()
             print("[DEBUG] Планировщик успешно остановлен.")
