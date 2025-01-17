@@ -1,38 +1,12 @@
 version: '3.8'
 
 services:
-  app:
+  db:
     build:
       context: .
-      dockerfile: Dockerfile
-    container_name: accr_app
-    environment:
-      - DISPLAY=:99
-      - DB_NAME=accr_db
-      - DB_USER=postgres
-      - DB_PASSWORD=1234
-      - DB_HOST=db
-      - DB_PORT=5432
-      - TZ=Asia/Bishkek
-    ports:
-      - "5900:5900"
-    volumes:
-      - /tmp/.X11-unix:/tmp/.X11-unix
-      - /:/uploads
-      - ./scheduler_config:/app/config
-    depends_on:
-      - db
-    restart: always
-
-  db:
-    image: postgres:14
     container_name: accr_db
-    environment:
-      POSTGRES_DB: accr_db
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: 1234
     ports:
-      - "5432:5432"
+      - "5432:5432" # Прокидываем порт PostgreSQL
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
