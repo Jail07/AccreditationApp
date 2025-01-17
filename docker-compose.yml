@@ -6,7 +6,7 @@ services:
       context: .
     container_name: accr_db
     ports:
-      - "5432:5432" # Прокидываем порт PostgreSQL
+      - "5432:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
 
