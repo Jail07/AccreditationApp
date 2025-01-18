@@ -6,9 +6,6 @@ class FileManager:
         file_name, _ = QFileDialog.getOpenFileName(parent, "Выберите файл", "", "Excel Files (*.xlsx)")
         return file_name
 
-    # def saveFile(self, df, file_name):
-    #     df.to_excel(file_name, index=False)
-
     def saveFile(self):
         if self.df is None:
             self.logMessage("Нет данных для сохранения.")
@@ -17,7 +14,7 @@ class FileManager:
         save_path, _ = QFileDialog.getSaveFileName(
             self,
             "Сохранить файл как",
-            "/uploads",
+            "",
             "Excel Files (*.xlsx);;All Files (*)"
         )
 

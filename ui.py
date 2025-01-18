@@ -120,7 +120,7 @@ class AccreditationApp(QWidget):
         file_path, _ = QFileDialog.getOpenFileName(
             self,
             "Выберите файл для проверки",
-            "/app/uploads",
+            "",
             "Excel Files (*.xlsx *.xls);;All Files (*)"
         )
 
