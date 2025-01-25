@@ -9,7 +9,7 @@ from file_manager import FileManager
 
 class Scheduler:
     def __init__(self, db_config):
-        self.scheduler = BackgroundScheduler(timezone="Asia/Bishkek")
+        self.scheduler = BackgroundScheduler(timezone="Europe/Moscow")
         self.db_manager = DatabaseManager(**db_config)
         self.file_manager = FileManager()
 

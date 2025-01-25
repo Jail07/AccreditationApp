@@ -1,5 +1,7 @@
 import traceback
 from datetime import datetime, date
+
+import pytz
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QPushButton, QFileDialog,
     QTableWidget, QTableWidgetItem, QTextEdit, QLabel, QMessageBox, QApplication
@@ -15,14 +17,15 @@ class AccreditationApp(QWidget):
         super().__init__()
         self.scheduler = BackgroundScheduler()
         self.db_manager = db_manager
-        self.file_manager = FileManager()
+        self.file_manager = FileManager(parent=self)
+        self.timezone = pytz.timezone("Europe/Moscow")
         self.processor = DataProcessor()
         self.df = None
         self.initUI()
 
     def logMessage(self, message, level="INFO"):
 
-        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+        timestamp = datetime.now(self.timezone).strftime("%Y-%m-%d %H:%M:%S")
         full_message = f"[{timestamp}] [{level}] {message}"
         self.logText.append(full_message)
         print(full_message)  # Для отладки в консоли

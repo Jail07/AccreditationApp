@@ -1,8 +1,13 @@
 import psycopg2
 from datetime import datetime, timedelta
 
+import pytz
+
+
 class DatabaseManager:
     def __init__(self, db_name, user, password, host="localhost", port=5432):
+        self.timezone = pytz.timezone("Europe/Moscow")
+        current_time = datetime.now(self.timezone)
         self.connection = psycopg2.connect(
             dbname=db_name,
             user=user,
@@ -128,7 +133,7 @@ class DatabaseManager:
             self.connection.commit()
 
             if new_status == "аккредитован":
-                start_accr = datetime.now()
+                start_accr = datetime.now(self.timezone)
                 end_accr = start_accr + timedelta(days=180)
 
                 self.add_to_main_table(accr_table_id, start_accr, end_accr)
@@ -149,7 +154,7 @@ class DatabaseManager:
             UPDATE AccrTable
             SET status = 'не активен'
             WHERE status = 'аккредитован' AND id IN (
-                SELECT accr_table_id FROM mainTable WHERE end_date < NOW()
+                SELECT accr_table_id FROM mainTable WHERE end_date < NOW() AT TIME ZONE 'Europe/Moscow'
             );
             """)
             self.connection.commit()
@@ -425,7 +430,7 @@ class DatabaseManager:
 
     def update_accreditation_status_from_file(self, valid_ids, start_date=None):
         try:
-            end_date = start_date + timedelta(days=180) if start_date else datetime.now() + timedelta(days=180)
+            end_date = start_date + timedelta(days=180) if start_date else datetime.now(self.timezone) + timedelta(days=180)
             for person_id in valid_ids:
                 self.cursor.execute("""
                 UPDATE AccrTable SET status = 'аккредитован' WHERE id = %s;
