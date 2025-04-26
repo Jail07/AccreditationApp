@@ -1,6 +1,6 @@
-from PyQt5.QtWidgets import QFileDialog
-from openpyxl.utils.dataframe import dataframe_to_rows
-from openpyxl.workbook import Workbook
+import os
+
+from PyQt5.QtWidgets import QFileDialog, QMessageBox
 
 
 class FileManager:
@@ -13,7 +13,7 @@ class FileManager:
     def saveFile(self, df, name):
         options = QFileDialog.Options()
         if df is None:
-            parent.logMessage("Нет данных для сохранения.")
+            self.parent.logMessage("Нет данных для сохранения.")
             return
 
         save_path, _ = QFileDialog.getSaveFileName(
@@ -29,3 +29,17 @@ class FileManager:
                 self.parent.logMessage(f"Файл успешно сохранен: {save_path}")
             except Exception as e:
                 self.parent.logMessage(f"Ошибка при сохранении файла: {e}")
+
+    def genFile(self, df, name):
+        if df is None:
+            self.parent.logMessage("Нет данных для генерации.")
+            return
+
+        save_path = os.path.join(os.getcwd(), f"{name}.xlsx")
+
+        try:
+            df.to_excel(save_path, index=False)
+            self.parent.logMessage(f"Файл успешно сгенерирован: {save_path}")
+        except Exception as e:
+            self.parent.logMessage(f"Ошибка при генерации файла: {e}")
+            QMessageBox.critical(self.parent, "Ошибка", f"Не удалось сохранить файл:\n{e}")

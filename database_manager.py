@@ -268,12 +268,12 @@ class DatabaseManager:
 
                 self.cursor.execute("""
                 INSERT INTO AccrTable (
-                    surname, name, middle_name, birth_date, birth_place, registration, organization, position, status
+                    surname, name, middle_name, birth_date, birth_place, registration, organization, position, status, added_date
                 )
-                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+                VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING id;
                 """, (
-                    surname, name, middle_name, birth_date, birth_place, registration, organization, position, "в чс"))
+                    surname, name, middle_name, birth_date, birth_place, registration, organization, position, "в чс", datetime.now(self.timezone)))
                 person_id = self.cursor.fetchone()[0]
 
                 self.cursor.execute("""

@@ -29,7 +29,7 @@ class DataProcessor:
     def cleanData(self, df):
         for col in df.columns:
             if col in ['Фамилия', 'Имя', 'Отчество', 'Дата рождения', 'Организация']:
-                df[col] = df[col].apply(lambda x: self.removeExtraSpaces(str(x)) if pd.notna(x) else None)
+                df[col] = df[col].apply(lambda x: self.removeExtraSpaces(str(x)) if pd.notna(x) else '')
             if col == 'Дата рождения':
                 df[col] = df[col].apply(self.normalizeDate)
         return df

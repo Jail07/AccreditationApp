@@ -26,7 +26,7 @@ class Scheduler:
                 other_data = [p for p in people_for_recheck if "ГПХ" not in (p['organization'] or "").upper()]
 
                 if gph_data:
-                    gph_file_name = f"Запрос на проверку_ГПХ_{today_date}.xlsx"
+                    gph_file_name = f"Запрос на проверку_ГПХ_{today_date}"
                     gph_df = pd.DataFrame([
                         {
                             "Фамилия": p['surname'],
@@ -40,13 +40,13 @@ class Scheduler:
                         }
                         for p in gph_data
                     ])
-                    self.file_manager.saveFile(gph_df, gph_file_name)
+                    self.file_manager.genFile(gph_df, gph_file_name)
                     print(f"[INFO] Файл для ГПХ успешно сгенерирован: {gph_file_name}")
                 else:
                     print("[INFO] Нет данных для ГПХ.")
 
                 if other_data:
-                    other_file_name = f"Запрос на проверку_Другие_{today_date}.xlsx"
+                    other_file_name = f"Запрос на проверку_{today_date}"
                     other_df = pd.DataFrame([
                         {
                             "Фамилия": p['surname'],
@@ -60,7 +60,7 @@ class Scheduler:
                         }
                         for p in other_data
                     ])
-                    self.file_manager.saveFile(other_df, other_file_name)
+                    self.file_manager.genFile(other_df, other_file_name)
                     print(f"[INFO] Файл для других организаций успешно сгенерирован: {other_file_name}")
                 else:
                     print("[INFO] Нет данных для других организаций.")
