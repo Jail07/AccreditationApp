@@ -1,4 +1,5 @@
 # database_manager.py
+import pandas as pd
 import psycopg2
 import psycopg2.pool
 import psycopg2.extras # Для RealDictCursor
@@ -50,20 +51,22 @@ class DatabaseManager:
     def execute_query(self, query, params=None, fetch=None, commit=False):
         """
         Выполняет SQL-запрос с использованием соединения из пула.
-
-        :param query: SQL-запрос (строка).
-        :param params: Параметры запроса (tuple или dict).
-        :param fetch: 'one', 'all' или None.
-        :param commit: True для фиксации транзакции (INSERT, UPDATE, DELETE).
-        :return: Результат fetch или None. Исключение при ошибке.
+        Теперь ожидает ЛИБО tuple (для %s), ЛИБО dict (для %(key)s).
         """
         conn = None
         result = None
+        # Проверяем, что params - это словарь или кортеж/список (или None)
+        if params is not None and not isinstance(params, (dict, tuple, list)):
+            self.logger.error(
+                f"Неверный тип параметров для execute_query: {type(params)}. Ожидался dict, tuple или list.")
+            # Можно поднять исключение или вернуть None
+            # raise TypeError("Параметры для execute_query должны быть dict, tuple или list")
+            return None
+
         try:
             conn = self._get_connection()
-            # Используем RealDictCursor для получения результатов в виде словарей
             with conn.cursor(cursor_factory=psycopg2.extras.RealDictCursor) as cursor:
-                cursor.execute(query, params)
+                cursor.execute(query, params)  # Передаем params напрямую
                 if fetch == 'one':
                     result = cursor.fetchone()
                 elif fetch == 'all':
@@ -71,21 +74,26 @@ class DatabaseManager:
 
                 if commit:
                     conn.commit()
-                self.logger.debug(f"Запрос выполнен успешно: {query[:100]}...") # Логируем только начало запроса
+                log_query = query.strip().split('\n', 1)[0]
+                self.logger.debug(f"Запрос выполнен успешно: {log_query[:150]}...")
             return result
         except psycopg2.Error as e:
-            if conn and commit: # Откат только если была попытка commit
+            if conn and commit:
                 try:
                     conn.rollback()
                     self.logger.warning(f"Транзакция отменена из-за ошибки: {e}")
                 except psycopg2.Error as rb_e:
-                     self.logger.error(f"Ошибка при откате транзакции: {rb_e}")
-            self.logger.error(f"Ошибка выполнения SQL запроса: {e}\nЗапрос: {query}\nПараметры: {params}")
-            # Не пробрасываем исключение дальше, чтобы приложение могло обработать None
-            return None # Возвращаем None в случае ошибки psycopg2
+                    self.logger.error(f"Ошибка при откате транзакции: {rb_e}")
+            # Логируем ошибку типа параметров отдельно, если это она
+            if isinstance(e, psycopg2.ProgrammingError) and "not all arguments converted" in str(e):
+                self.logger.error(
+                    f"Ошибка несоответствия параметров psycopg2: {e}\nЗапрос: {query}\nПараметры ({type(params)}): {params}")
+            else:
+                self.logger.error(
+                    f"Ошибка выполнения SQL запроса: {e}\nЗапрос: {query}\nПараметры ({type(params)}): {params}")
+            return None
         except Exception as e:
             self.logger.exception(f"Неожиданная ошибка при выполнении запроса: {e}")
-            # Пробрасываем другие исключения
             raise
         finally:
             if conn:
@@ -133,6 +141,7 @@ class DatabaseManager:
                 registration TEXT,
                 organization TEXT NOT NULL,
                 position TEXT,
+                notes TEXT, -- <--- ДОБАВЛЕНО ПОЛЕ ДЛЯ ПРИМЕЧАНИЙ
                 status TEXT, -- Статус из UI после первичной проверки
                 load_timestamp TIMESTAMPTZ DEFAULT NOW()
             );
@@ -166,64 +175,113 @@ class DatabaseManager:
 
     def log_transaction(self, person_id, operation_type, details=""):
         """Логирует операцию в таблицу Records."""
+        # Этот метод уже есть и должен использоваться всеми операциями изменения данных.
+        # Убедитесь, что он вызывается в add_to_accrtable, activate_person_by_details, toggle_blacklist и т.д.
         query = """
-        INSERT INTO Records (person_id, operation_type, details, operation_date)
-        VALUES (%s, %s, %s, %s);
-        """
+           INSERT INTO Records (person_id, operation_type, details, operation_date)
+           VALUES (%s, %s, %s, %s);
+           """
         now_tz = datetime.now(self.timezone)
         params = (person_id, operation_type, details, now_tz)
-        self.execute_query(query, params, commit=True)
+        # Этот commit=True важен
+        res = self.execute_query(query, params, commit=True)
+        if res is None:  # Успешный INSERT/UPDATE/DELETE с commit=True вернет None
+            self.logger.debug(f"Транзакция для person_id={person_id}, тип='{operation_type}' успешно залогирована.")
         # Об ошибке сообщит execute_query
 
     def add_to_td(self, data):
-        """Добавляет запись во временную таблицу TD."""
-        required_fields = ['surname', 'name', 'birth_date', 'organization']
-        if not all(data.get(field) for field in required_fields):
-            self.logger.warning(f"Пропущена запись в TD из-за отсутствия обязательных полей: {data}")
+        """Добавляет запись во временную таблицу TD, включая примечания."""
+        required_fields_from_data = ['Фамилия', 'Имя', 'Дата рождения', 'Организация'] # Ключи как в data
+        if not all(field in data and pd.notna(data[field]) for field in required_fields_from_data):
+            self.logger.warning(f"Пропущена запись в TD из-за отсутствия обязательных полей в data: {data}")
             return None
 
+        # --- ИЗМЕНЕНИЕ: Переход на %s плейсхолдеры ---
         query = """
-        INSERT INTO TD (surname, name, middle_name, birth_date, birth_place, registration, organization, position, status, load_timestamp)
-        VALUES (%(surname)s, %(name)s, %(middle_name)s, %(birth_date)s, %(birth_place)s, %(registration)s, %(organization)s, %(position)s, %(status)s, %s)
+        INSERT INTO TD (surname, name, middle_name, birth_date, birth_place,
+                       registration, organization, position, notes,
+                       status, load_timestamp)
+        VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
         RETURNING id;
         """
         now_tz = datetime.now(self.timezone)
-        params = {
-            'surname': data.get('surname'),
-            'name': data.get('name'),
-            'middle_name': data.get('middle_name'),
-            'birth_date': data.get('birth_date'),
-            'birth_place': data.get('birth_place'),
-            'registration': data.get('registration'),
-            'organization': data.get('organization'),
-            'position': data.get('position'),
-            'status': data.get('status', 'На проверку') # Статус из UI
-        }
-        result = self.execute_query(query, (params, now_tz), fetch='one', commit=True)
+        notes_value = data.get('Примечания') # Ключ из data
+        notes_str = str(notes_value) if notes_value is not None else ''
+        # --------------------------------------------------
+        # Формируем кортеж параметров в правильном порядке
+        params_tuple = (
+            data.get('Фамилия'),
+            data.get('Имя'),
+            data.get('Отчество'),
+            data.get('Дата рождения'),
+            data.get('Место рождения'),
+            data.get('Регистрация'),
+            data.get('Организация'),
+            data.get('Должность'),
+            notes_str,
+            data.get('status', data.get('Статус Проверки', 'На проверку')),
+            now_tz
+        )
+
+
+        result = self.execute_query(query, params_tuple, fetch='one', commit=True)
+
         if result:
-            self.logger.info(f"Запись добавлена в TD: {params.get('surname')} {params.get('name')}, ID: {result['id']}")
+            self.logger.info(f"Запись добавлена в TD: {data.get('Фамилия')} {data.get('Имя')}, ID: {result['id']}")
             return result['id']
         else:
-            self.logger.error(f"Не удалось добавить запись в TD: {params.get('surname')} {params.get('name')}")
+            self.logger.error(f"Не удалось добавить запись в TD: {data.get('Фамилия')} {data.get('Имя')}")
             return None
 
     def find_person_in_accrtable(self, surname, name, middle_name, birth_date):
         """Ищет человека в AccrTable. Возвращает ID или None."""
+        if not surname or not name or not birth_date:
+             self.logger.warning("Попытка поиска в AccrTable без ФИО или даты рождения.")
+             return None # Не можем искать без основных данных
+
+        # Стандартизация middle_name: None и '' считаем эквивалентными
+        middle_name_param = middle_name if middle_name else '' # Используем '' для запроса
+
         query = """
         SELECT id FROM AccrTable
         WHERE surname = %s AND name = %s AND birth_date = %s
+        AND COALESCE(middle_name, '') = %s -- Используем COALESCE для сравнения None и ''
+        ORDER BY id DESC LIMIT 1;
         """
-        params_list = [surname, name, birth_date]
-        if middle_name:
-            query += " AND middle_name = %s"
-            params_list.append(middle_name)
+        params = (surname, name, birth_date, middle_name_param)
+
+        result = self.execute_query(query, params, fetch='one')
+        found_id = result['id'] if result else None
+        if found_id:
+             self.logger.debug(f"Найден person_id={found_id} для {surname} {name} {middle_name_param} {birth_date}")
         else:
-            query += " AND (middle_name IS NULL OR middle_name = '')"
+             self.logger.debug(f"Не найден person_id для {surname} {name} {middle_name_param} {birth_date}")
+        return found_id
 
-        query += " ORDER BY id DESC LIMIT 1;" # Берем последнюю запись, если вдруг дубликаты
+    def find_person_in_td(self, surname, name, middle_name, birth_date):
+        """Ищет человека в TD. Возвращает ID или None."""
+        if not surname or not name or not birth_date:
+             self.logger.warning("Попытка поиска в AccrTable без ФИО или даты рождения.")
+             return None # Не можем искать без основных данных
 
-        result = self.execute_query(query, tuple(params_list), fetch='one')
-        return result['id'] if result else None
+        # Стандартизация middle_name: None и '' считаем эквивалентными
+        middle_name_param = middle_name if middle_name else '' # Используем '' для запроса
+
+        query = """
+        SELECT id FROM TD
+        WHERE surname = %s AND name = %s AND birth_date = %s
+        AND COALESCE(middle_name, '') = %s -- Используем COALESCE для сравнения None и ''
+        ORDER BY id DESC LIMIT 1;
+        """
+        params = (surname, name, birth_date, middle_name_param)
+
+        result = self.execute_query(query, params, fetch='one')
+        found_id = result['id'] if result else None
+        if found_id:
+             self.logger.debug(f"Найден person_id={found_id} для {surname} {name} {middle_name_param} {birth_date}")
+        else:
+             self.logger.debug(f"Не найден person_id для {surname} {name} {middle_name_param} {birth_date}")
+        return found_id
 
     def get_person_status(self, surname, name, middle_name, birth_date):
         """
@@ -231,6 +289,9 @@ class DatabaseManager:
         Возвращает словарь {'status': 'BLACKLISTED'|'ACTIVE'|'EXPIRED'|'NOT_FOUND', 'person_id': id | None}.
         """
         person_id = self.find_person_in_accrtable(surname, name, middle_name, birth_date)
+        if not person_id:
+            return {'status': 'NOT_FOUND', 'person_id': None}
+        person_id = self.find_person_in_td(surname, name, middle_name, birth_date)
         if not person_id:
             return {'status': 'NOT_FOUND', 'person_id': None}
 
@@ -250,9 +311,11 @@ class DatabaseManager:
             elif result['end_accr'] and result['end_accr'] > now_tz:
                  # Проверяем, что end_accr не NULL и больше текущего времени
                 return {'status': 'ACTIVE', 'person_id': person_id}
-            else:
+            elif result['end_accr'] and result['end_accr'] < now_tz:
                 # Статус есть, но он не черный список и аккредитация истекла или не была установлена
                  return {'status': 'EXPIRED', 'person_id': person_id}
+            else:
+                return {'status': 'CHECKING', 'person_id': person_id}
         else:
             # Человек есть в AccrTable, но нет записей в mainTable (например, только добавлен)
             return {'status': 'NOT_FOUND', 'person_id': person_id} # Считаем, что статус не найден
@@ -261,40 +324,50 @@ class DatabaseManager:
         """
         Добавляет запись в AccrTable, если её там нет.
         Возвращает ID существующей или новой записи.
+        Ожидает словарь `data` с ключами как в DataFrame (Фамилия, Имя и т.д.)
         """
+        now_tz = datetime.now(self.timezone)
+        try:
+            params = {
+                'surname': data.get('Фамилия'),
+                'name': data.get('Имя'),
+                'middle_name': data.get('Отчество'),
+                'birth_date': data.get('Дата рождения'),
+                'birth_place': data.get('Место рождения'),
+                'registration': data.get('Регистрация'),
+                'organization': data.get('Организация'),
+                'position': data.get('Должность'),
+                'notes': data.get('Примечания'),
+                'status': status,  # Статус передается как аргумент функции
+                'added_date': now_tz  # Добавляем дату добавления
+            }
+        except Exception as e:
+            pass
         person_id = self.find_person_in_accrtable(
             data.get('surname'), data.get('name'), data.get('middle_name'), data.get('birth_date')
         )
         if person_id:
             self.logger.info(f"Человек {data.get('surname')} {data.get('name')} уже существует в AccrTable (ID: {person_id}).")
             # Опционально: Обновить данные существующей записи?
-            # query_update = "UPDATE AccrTable SET organization=%s, position=%s, ... WHERE id=%s"
-            # self.execute_query(query_update, (..., person_id), commit=True)
             return person_id
 
+        # --- ИЗМЕНЕНИЕ ЗАПРОСА И ПАРАМЕТРОВ ---
         query = """
-        INSERT INTO AccrTable (surname, name, middle_name, birth_date, birth_place, registration, organization, position, status, added_date)
-        VALUES (%(surname)s, %(name)s, %(middle_name)s, %(birth_date)s, %(birth_place)s, %(registration)s, %(organization)s, %(position)s, %s, %s)
+        INSERT INTO AccrTable (surname, name, middle_name, birth_date, birth_place, registration, organization, position, notes, status, added_date)
+        VALUES (%(surname)s, %(name)s, %(middle_name)s, %(birth_date)s, %(birth_place)s, %(registration)s, %(organization)s, %(position)s, %(notes)s, %(status)s, %(added_date)s)
         RETURNING id;
         """
-        now_tz = datetime.now(self.timezone)
-        params = {
-            'surname': data.get('surname'),
-            'name': data.get('name'),
-            'middle_name': data.get('middle_name'),
-            'birth_date': data.get('birth_date'),
-            'birth_place': data.get('birth_place'),
-            'registration': data.get('registration'),
-            'organization': data.get('organization'),
-            'position': data.get('position')
-        }
-        result = self.execute_query(query, (params, status, now_tz), fetch='one', commit=True)
+
+
+        # Передаем ТОЛЬКО СЛОВАРЬ params в execute_query
+        result = self.execute_query(query, params, fetch='one', commit=True)
+        # --- КОНЕЦ ИЗМЕНЕНИЯ ---
+
         if result:
             new_id = result['id']
             self.logger.info(f"Человек {params.get('surname')} {params.get('name')} добавлен в AccrTable (ID: {new_id}) со статусом '{status}'.")
             self.log_transaction(new_id, 'Добавлен в AccrTable', f'Статус: {status}')
-            # Сразу добавляем запись в mainTable без дат аккредитации, но с black_list=False
-            self.add_initial_main_record(new_id)
+            self.add_initial_main_record(new_id) # Добавляем запись в mainTable
             return new_id
         else:
             self.logger.error(f"Не удалось добавить человека {params.get('surname')} {params.get('name')} в AccrTable.")
@@ -311,7 +384,7 @@ class DatabaseManager:
             """
             now_tz = datetime.now(self.timezone)
             self.execute_query(query_insert, (person_id, now_tz), commit=True)
-            self.logger.info(f"Добавлена начальная запись в mainTable для person_id={person_id}")
+
 
     def update_accreditation_status(self, person_id, new_status, start_date=None, days_valid=180):
         """Обновляет статус в AccrTable и добавляет/обновляет запись в mainTable."""
@@ -356,63 +429,195 @@ class DatabaseManager:
              self.logger.error(f"Не удалось обновить статус в mainTable для person_id={person_id}.")
              return False
 
-    def toggle_blacklist(self, person_id):
-        """Переключает статус black_list для person_id в mainTable."""
-        if not person_id:
-            self.logger.warning("Попытка изменить черный список без person_id.")
-            return None # Возвращаем None при ошибке
+    def toggle_blacklist(self, person_data): # Теперь принимаем словарь с данными
+        """
+        Переключает статус black_list. Если сотрудник не найден, добавляет его
+        в AccrTable и mainTable сразу с black_list=True.
+        Если снимается с ЧС и это была единственная причина его нахождения в AccrTable,
+        то удаляет из AccrTable/mainTable и добавляет в TD.
+        """
+        surname = person_data.get('Фамилия')
+        name = person_data.get('Имя')
+        middle_name = person_data.get('Отчество')
+        birth_date = person_data.get('Дата рождения') # Должна быть дата
 
+        if not surname or not name or not birth_date:
+            self.logger.warning("toggle_blacklist: Недостаточно данных (ФИО, ДР) для поиска/создания сотрудника.")
+            return None, "Недостаточно данных для операции."
+
+        person_id = self.find_person_in_accrtable(surname, name, middle_name, birth_date)
         now_tz = datetime.now(self.timezone)
+        action_taken = ""
+        original_accr_status_if_exists = None
 
-        # Получаем текущий статус blacklist
-        query_get = "SELECT id, black_list FROM mainTable WHERE person_id = %s ORDER BY id DESC LIMIT 1"
-        current_state = self.execute_query(query_get, (person_id,), fetch='one')
+        if not person_id:
+            # --- Сотрудника нет, добавляем сразу в ЧС ---
+            self.logger.info(f"toggle_blacklist: Сотрудник {surname} {name} не найден. Добавление в ЧС...")
+            # Собираем данные для AccrTable из person_data
+            # Ключи в person_data должны соответствовать тем, что приходят из UI
+            accr_data_for_new = {
+                'Фамилия': surname, 'Имя': name, 'Отчество': middle_name,
+                'Дата рождения': birth_date,
+                'Место рождения': person_data.get('Место рождения'),
+                'Регистрация': person_data.get('Адрес регистрации'), # Или 'Регистрация'
+                'Организация': person_data.get('Организация', 'ЧС (не в штате)'), # Указываем источник
+                'Должность': person_data.get('Должность'),
+                'Примечания': person_data.get('Примечания', 'Добавлен сразу в ЧС')
+            }
+            # Добавляем в AccrTable со статусом 'отведен'
+            person_id = self.add_to_accrtable(accr_data_for_new, status='отведен')
+            if not person_id:
+                self.logger.error(f"toggle_blacklist: Не удалось добавить нового сотрудника {surname} {name} в AccrTable.")
+                return None, "Ошибка добавления нового сотрудника."
 
-        if not current_state:
-             self.logger.warning(f"Не найдена запись в mainTable для person_id={person_id} при попытке изменить ЧС.")
-              # Если человека нет в mainTable, но есть в AccrTable, добавляем запись с black_list=True
-             self.add_initial_main_record(person_id)
-             query_set_black = "UPDATE mainTable SET black_list = TRUE, last_checked = %s WHERE person_id = %s"
-             self.execute_query(query_set_black, (now_tz, person_id), commit=True)
-             self.log_transaction(person_id, 'Добавлен в черный список')
-             return "добавлен в черный список"
-
-
-        new_blacklist_status = not current_state['black_list']
-        main_table_id = current_state['id']
-
-        query_update = "UPDATE mainTable SET black_list = %s, last_checked = %s WHERE id = %s"
-        result = self.execute_query(query_update, (new_blacklist_status, now_tz, main_table_id), commit=True)
-
-        if result is not None: # commit=True вернет None при успехе
-            action = "добавлен в черный список" if new_blacklist_status else "убран из черного списка"
-            # Обновляем статус и в AccrTable
-            accr_status = 'отведен' if new_blacklist_status else 'в ожидании'
-            query_accr = "UPDATE AccrTable SET status = %s WHERE id = %s"
-            self.execute_query(query_accr, (accr_status, person_id), commit=True)
-
-            self.logger.info(f"Сотрудник person_id={person_id} {action}.")
-            self.log_transaction(person_id, 'Изменен статус ЧС', f'Новый статус ЧС: {new_blacklist_status}, Статус Accr: {accr_status}')
-            return action
+            # Запись в mainTable с black_list = TRUE
+            query_main = """
+            INSERT INTO mainTable (person_id, black_list, last_checked)
+            VALUES (%s, TRUE, %s) RETURNING id;
+            """
+            main_record = self.execute_query(query_main, (person_id, now_tz), fetch='one', commit=True)
+            if main_record:
+                self.log_transaction(person_id, 'Добавлен в ЧС (новый)', f"Статус Accr: отведен")
+                action_taken = "добавлен в черный список (новый)"
+                return action_taken, f"Сотрудник {surname} {name} добавлен и помещен в ЧС."
+            else:
+                self.logger.error(f"toggle_blacklist: Не удалось создать запись в mainTable для нового ЧС сотрудника ID {person_id}.")
+                # По-хорошему, откатить добавление в AccrTable, но это усложнит
+                return None, "Ошибка создания записи о ЧС."
         else:
-            self.logger.error(f"Не удалось изменить статус черного списка для person_id={person_id}.")
-            return None # Возвращаем None при ошибке
+            # --- Сотрудник существует, переключаем статус ЧС ---
+            # Сохраняем текущий статус AccrTable перед изменением
+            current_accr_q = "SELECT status FROM AccrTable WHERE id = %s"
+            current_accr_res = self.execute_query(current_accr_q, (person_id,), fetch='one')
+            if current_accr_res:
+                original_accr_status_if_exists = current_accr_res['status']
+
+
+            query_get_main = "SELECT id, black_list FROM mainTable WHERE person_id = %s ORDER BY id DESC LIMIT 1"
+            main_state = self.execute_query(query_get_main, (person_id,), fetch='one')
+
+            if not main_state: # Если есть в AccrTable, но нет в mainTable (маловероятно после add_initial_main_record)
+                 self.add_initial_main_record(person_id) # Создаем запись
+                 main_state = {'id': self.execute_query("SELECT id FROM mainTable WHERE person_id = %s ORDER BY id DESC LIMIT 1", (person_id,), fetch='one')['id'], 'black_list': False}
+
+
+            new_blacklist_status = not main_state['black_list']
+            main_table_id = main_state['id']
+
+            query_update_main = "UPDATE mainTable SET black_list = %s, last_checked = %s WHERE id = %s"
+            res_main = self.execute_query(query_update_main, (new_blacklist_status, now_tz, main_table_id), commit=False) # commit=False
+            conn = self._get_connection()
+
+            if res_main is not None: # Успех без коммита (None)
+                if new_blacklist_status:
+                    # --- Помещаем в ЧС ---
+                    accr_status_new = 'отведен'
+                    action_taken = "добавлен в черный список"
+                    query_update_accr = "UPDATE AccrTable SET status = %s WHERE id = %s"
+                    self.execute_query(query_update_accr, (accr_status_new, person_id), commit=True) # Коммитим обе транзакции
+                    self.log_transaction(person_id, 'Добавлен в ЧС', f"Старый статус Accr: {original_accr_status_if_exists}, Новый: {accr_status_new}")
+                    return action_taken, f"Сотрудник {surname} {name} помещен в ЧС."
+                else:
+                    # --- Убираем из ЧС ---
+                    self.logger.info(f"Сотрудник {surname} {name} (ID: {person_id}) убирается из ЧС.")
+                    # Проверяем, был ли он только "отведен" из-за ЧС
+                    # и нет ли у него активной аккредитации
+                    has_active_accreditation = False
+                    if main_state.get('end_accr') and pd.to_datetime(main_state.get('end_accr')).tz_convert(self.timezone) > now_tz:
+                         has_active_accreditation = True
+
+                    # Если был 'отведен' и нет активной аккредитации -> переносим в TD и удаляем
+                    # ИЛИ если его добавили сразу в ЧС (original_accr_status_if_exists может быть 'отведен' или 'в ожидании', если создали и сразу в ЧС)
+                    # Лучше ориентироваться на то, что если он был в ЧС и его оттуда убирают,
+                    # и он НЕ аккредитован, то он должен пройти проверку (в TD)
+                    if not has_active_accreditation:
+                        self.logger.info(f"Сотрудник ID {person_id} не имеет активной аккредитации. Перенос в TD и удаление из Accr/mainTable...")
+                        # 1. Получаем данные из AccrTable для TD
+                        accr_details_q = "SELECT *, notes AS \"Примечания\" FROM AccrTable WHERE id = %s" # Добавляем алиас для Примечаний
+                        accr_details = self.execute_query(accr_details_q, (person_id,), fetch='one')
+
+                        if accr_details:
+                            # Преобразуем ключи для add_to_td (Фамилия, Имя и т.д.)
+                            data_for_td = {
+                                'Фамилия': accr_details.get('surname'),
+                                'Имя': accr_details.get('name'),
+                                'Отчество': accr_details.get('middle_name'),
+                                'Дата рождения': accr_details.get('birth_date'),
+                                'Место рождения': accr_details.get('birth_place'),
+                                'Регистрация': accr_details.get('registration'),
+                                'Организация': accr_details.get('organization'),
+                                'Должность': accr_details.get('position'),
+                                'Примечания': accr_details.get('Примечания'), # Уже есть алиас
+                                'status': 'На проверку (снят с ЧС)'
+                            }
+                            td_id = self.add_to_td(data_for_td) # add_to_td уже коммитит
+                            if td_id:
+                                self.log_transaction(person_id, 'Снят с ЧС и перенесен в TD')
+                                # 2. Удаляем из mainTable и AccrTable (после успешного добавления в TD)
+                                # Сначала mainTable из-за FOREIGN KEY
+                                self.execute_query("DELETE FROM mainTable WHERE person_id = %s", (person_id,), commit=False)
+                                self.execute_query("DELETE FROM AccrTable WHERE id = %s", (person_id,), commit=True) # Коммитим оба удаления
+                                self.logger.info(f"Сотрудник ID {person_id} удален из AccrTable/mainTable.")
+                                action_taken = "убран из черного списка и перенесен в TD"
+                                return action_taken, f"Сотрудник {surname} {name} убран из ЧС и добавлен в TD для проверки."
+                            else:
+                                self.logger.error(f"Не удалось добавить сотрудника ID {person_id} в TD при снятии с ЧС. Откат.")
+                                conn.rollback() # Откатываем обновление mainTable (снятие флага ЧС)
+                                return None, "Ошибка переноса в TD при снятии с ЧС."
+                        else:
+                             self.logger.error(f"Не удалось получить детали сотрудника ID {person_id} из AccrTable для переноса в TD. Откат.")
+                             conn.rollback()
+                             return None, "Ошибка получения данных для переноса в TD."
+                    else:
+                        # Если был в ЧС, но аккредитация еще активна - просто снимаем флаг ЧС и ставим статус 'аккредитован'
+                        accr_status_new = 'аккредитован'
+                        query_update_accr = "UPDATE AccrTable SET status = %s WHERE id = %s"
+                        self.execute_query(query_update_accr, (accr_status_new, person_id), commit=True) # Коммитим и обновление mainTable
+                        self.log_transaction(person_id, 'Снят с ЧС (активен)', f"Старый статус Accr: {original_accr_status_if_exists}, Новый: {accr_status_new}")
+                        action_taken = "убран из черного списка (аккредитация активна)"
+                        return action_taken, f"Сотрудник {surname} {name} убран из ЧС, аккредитация активна."
+            else: # Ошибка обновления mainTable
+                self.logger.error(f"toggle_blacklist: Не удалось обновить mainTable для ID {person_id}.")
+                conn.rollback()
+                return None, "Ошибка обновления статуса ЧС."
+
+        return None, "Непредвиденная ситуация в toggle_blacklist."
 
     def search_people(self, search_term):
-        """Ищет людей по ФИО или организации."""
-        query = """
-        SELECT a.id, a.surname, a.name, a.middle_name, a.birth_date, a.organization, a.status,
-               mt.black_list, mt.end_accr
-        FROM AccrTable a
-        LEFT JOIN mainTable mt ON a.id = mt.person_id AND mt.id = (
-            SELECT MAX(id) FROM mainTable WHERE person_id = a.id
-        )
-        WHERE a.surname ILIKE %s OR a.name ILIKE %s OR a.middle_name ILIKE %s OR a.organization ILIKE %s
-        ORDER BY a.surname, a.name;
-        """
         like_term = f"%{search_term}%"
         params = (like_term, like_term, like_term, like_term)
-        return self.execute_query(query, params, fetch='all')
+        query_accr = """
+        SELECT
+            a.id, a.surname, a.name, a.middle_name, a.birth_date,
+            a.organization, a.position, a.status AS accr_status,
+            (CASE WHEN a.notes IS NOT NULL AND a.notes != '' THEN TRUE ELSE FALSE END) AS has_notes,
+            mt.black_list,
+            mt.start_accr, -- <--- Начало аккредитации из mainTable
+            mt.end_accr,
+            a.added_date AS record_creation_date, -- Дата создания записи в AccrTable (если нужно отдельно)
+            'AccrTable' AS source
+        FROM AccrTable a
+        LEFT JOIN mainTable mt ON a.id = mt.person_id AND mt.id = (
+            SELECT MAX(sub.id) FROM mainTable sub WHERE sub.person_id = a.id
+        )
+        WHERE a.surname ILIKE %s OR a.name ILIKE %s OR a.middle_name ILIKE %s OR a.organization ILIKE %s
+        """
+        query_td = """
+        SELECT
+            NULL::INT AS id, t.surname, t.name, t.middle_name, t.birth_date,
+            t.organization, t.position, t.status AS td_status,
+            (CASE WHEN t.notes IS NOT NULL AND t.notes != '' THEN TRUE ELSE FALSE END) AS has_notes,
+            FALSE AS black_list,
+            NULL::TIMESTAMPTZ AS start_accr, -- <--- Для TD нет начала аккредитации
+            NULL::TIMESTAMPTZ AS end_accr,
+            t.load_timestamp AS record_creation_date, -- Дата загрузки в TD
+            'TD' AS source
+        FROM TD t
+        WHERE t.surname ILIKE %s OR t.name ILIKE %s OR t.middle_name ILIKE %s OR t.organization ILIKE %s
+        """
+        full_query = f"({query_accr}) UNION ALL ({query_td}) ORDER BY surname, name;"
+        full_params = params + params
+        return self.execute_query(full_query, full_params, fetch='all')
 
     def get_employee_records(self, person_id):
          """Получает историю операций для сотрудника из таблицы Records."""
@@ -434,7 +639,7 @@ class DatabaseManager:
         """Обновляет примечания для сотрудника."""
         query = "UPDATE AccrTable SET notes = %s WHERE id = %s;"
         result = self.execute_query(query, (notes, person_id), commit=True)
-        if result is not None: # commit=True вернет None при успехе
+        if result is None: # commit=True вернет None при успехе
              self.logger.info(f"Примечания для person_id={person_id} обновлены.")
              self.log_transaction(person_id, 'Примечания обновлены')
              return True
@@ -514,6 +719,91 @@ class DatabaseManager:
                  self.log_transaction(person_id, 'Аккредитация истекла', 'Статус изменен на "истек срок"')
             return len(expired_ids)
         return 0
+
+    def activate_person_by_details(self, surname, name, middle_name, birth_date):
+        """
+        Активирует сотрудника (статус 'аккредитован', даты в mainTable),
+        если он найден в AccrTable и имеет статус 'в ожидании'.
+        Возвращает кортеж (success: bool, message: str, person_id: int | None).
+        """
+        person_id = self.find_person_in_accrtable(surname, name, middle_name, birth_date)
+
+        if not person_id:
+            msg = f"Сотрудник {surname} {name} не найден в AccrTable."
+            self.logger.info(msg)
+            return False, msg, None # Возвращаем None как person_id
+
+        # Проверяем текущий статус
+        query_get_status = "SELECT status FROM AccrTable WHERE id = %s;"
+        current_record = self.execute_query(query_get_status, (person_id,), fetch='one')
+
+        if not current_record:
+             msg = f"Не удалось получить текущий статус для ID {person_id} (хотя он был найден)."
+             self.logger.error(msg)
+             return False, msg, person_id
+        current_status = current_record.get('status')
+
+        if current_status != 'в ожидании':
+            msg = f"Статус сотрудника ID {person_id} ({surname} {name}) не 'в ожидании' (текущий: '{current_status}'). Активация не требуется."
+            self.logger.info(msg)
+            # Считаем это "успехом" в смысле обработки строки, но без действия
+            return True, f"Статус уже '{current_status}'. Активация не требуется.", person_id
+
+        # --- Выполняем активацию ---
+        self.logger.info(f"Активация сотрудника ID {person_id} ({surname} {name})...")
+        new_status = 'аккредитован'
+        now_tz = datetime.now(self.timezone)
+        end_accr = now_tz + timedelta(days=180)
+
+        # Используем одну транзакцию для обоих обновлений
+        conn = None
+        try:
+            conn = self._get_connection()
+            with conn.cursor() as cursor:
+                # 1. Обновляем AccrTable
+                cursor.execute("UPDATE AccrTable SET status = %s WHERE id = %s", (new_status, person_id))
+
+                # 2. Проверяем наличие записи в mainTable
+                cursor.execute("SELECT id FROM mainTable WHERE person_id = %s", (person_id,))
+                main_table_entry = cursor.fetchone()
+
+                if main_table_entry:
+                    # Запись существует, ОБНОВЛЯЕМ её
+                    cursor.execute("""
+                                       UPDATE mainTable
+                                       SET start_accr = %s,
+                                           end_accr = %s,
+                                           black_list = FALSE,
+                                           last_checked = %s
+                                       WHERE person_id = %s;
+                                       """, (now_tz, end_accr, now_tz, person_id))  # Условие по person_id
+                else:
+                    # Записи нет, ВСТАВЛЯЕМ новую
+                    cursor.execute("""
+                                       INSERT INTO mainTable (person_id, start_accr, end_accr, black_list, last_checked)
+                                       VALUES (%s, %s, %s, FALSE, %s);
+                                       """, (person_id, now_tz, end_accr, now_tz))
+            conn.commit()
+            self.logger.info(f"Сотрудник ID {person_id} успешно активирован. Аккредитация до {end_accr.strftime('%Y-%m-%d')}.")
+            self.log_transaction(person_id, 'Статус Активен (файл)', f'Аккредитация до {end_accr.strftime("%Y-%m-%d")}')
+            return True, "Сотрудник успешно активирован.", person_id
+
+        except psycopg2.Error as e:
+            if conn:
+                try: conn.rollback()
+                except psycopg2.Error: self.logger.error("Ошибка при откате транзакции активации.")
+            self.logger.error(f"Ошибка БД при активации ID {person_id}: {e}")
+            return False, f"Ошибка БД: {e}", person_id
+        except Exception as e:
+            if conn:
+                 try: conn.rollback()
+                 except psycopg2.Error: self.logger.error("Ошибка при откате транзакции активации.")
+            self.logger.exception(f"Неожиданная ошибка при активации ID {person_id}: {e}")
+            return False, f"Внутренняя ошибка: {e}", person_id
+        finally:
+             if conn:
+                  self._release_connection(conn)
+
 
     def close_pool(self):
         """Закрывает пул соединений."""

@@ -71,24 +71,72 @@ class FileManager:
 
     def save_reports(self, reports_dict):
         """
-        Сохраняет несколько DataFrame из словаря, запрашивая путь для каждого.
+        Сохраняет несколько DataFrame из словаря в выбранную пользователем ПАПКУ.
         reports_dict: {'Название_отчета': DataFrame}
+        Возвращает количество успешно сохраненных файлов.
         """
-        self.logger.info(f"Запрос на сохранение {len(reports_dict)} отчетов.")
+        if not reports_dict or all(df.empty for df in reports_dict.values()):
+             self.logger.warning("Нет непустых отчетов для сохранения.")
+             QMessageBox.warning(self.parent_widget, "Нет данных", "Нет непустых отчетов для сохранения.")
+             return 0
+
+        self.logger.info(f"Запрос на сохранение {len(reports_dict)} отчетов в одну папку.")
+
+        # Запрашиваем у пользователя директорию для сохранения
+        selected_directory = QFileDialog.getExistingDirectory(
+            self.parent_widget,
+            "Выберите папку для сохранения отчетов",
+            "" # Начальная директория (можно указать)
+        )
+
+        if not selected_directory:
+            self.logger.info("Выбор папки для сохранения отчетов отменен пользователем.")
+            return 0 # Возвращаем 0, если отменено
+
+        self.logger.info(f"Отчеты будут сохранены в: {selected_directory}")
         saved_count = 0
-        total_count = len(reports_dict)
+        total_files_to_save = 0
+        errors = []
+
+        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
 
         for report_name, df in reports_dict.items():
             if df is not None and not df.empty:
-                if self.save_dataframe(df, default_filename=report_name):
+                total_files_to_save += 1
+                # Формируем имя файла
+                filename = f"{report_name}_{timestamp}.xlsx"
+                save_path = os.path.join(selected_directory, filename)
+
+                try:
+                    df.to_excel(save_path, index=False, engine='openpyxl')
+                    self.logger.info(f"Отчет '{report_name}' успешно сохранен как: {filename}")
                     saved_count += 1
+                except ImportError:
+                     err_msg = "Ошибка сохранения: движок 'openpyxl' не установлен. Установите: pip install openpyxl"
+                     self.logger.exception(err_msg)
+                     errors.append(f"Не удалось сохранить '{filename}': {err_msg}")
+                     # Прерываем сохранение, если нет движка
+                     break
+                except Exception as e:
+                    self.logger.exception(f"Ошибка при сохранении отчета '{report_name}' в {save_path}: {e}")
+                    errors.append(f"Не удалось сохранить '{filename}': {e}")
             else:
                 self.logger.info(f"Отчет '{report_name}' пуст, сохранение пропущено.")
-                total_count -= 1 # Уменьшаем общее число, если отчет пуст
 
-        self.logger.info(f"Сохранено {saved_count} из {total_count} непустых отчетов.")
+        # Сообщение пользователю по итогам
+        if saved_count == total_files_to_save and total_files_to_save > 0:
+             QMessageBox.information(self.parent_widget, "Успешно", f"Успешно сохранено {saved_count} отчетов в папку:\n{selected_directory}")
+        elif saved_count > 0:
+             error_details = "\n".join(errors)
+             QMessageBox.warning(self.parent_widget, "Завершено с ошибками",
+                                 f"Сохранено {saved_count} из {total_files_to_save} отчетов в папку:\n{selected_directory}\n\nОшибки:\n{error_details}")
+        elif errors:
+             error_details = "\n".join(errors)
+             QMessageBox.critical(self.parent_widget, "Ошибка сохранения", f"Не удалось сохранить ни одного отчета.\n\nОшибки:\n{error_details}")
+        # Если total_files_to_save == 0, сообщение было показано ранее.
+
+        self.logger.info(f"Сохранено {saved_count} из {total_files_to_save} непустых отчетов.")
         return saved_count
-
     def generate_file_scheduler(self, df, filename_prefix):
         """
         Генерирует файл в предопределенной папке (для планировщика).

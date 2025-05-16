@@ -3,6 +3,8 @@ import sys
 import os
 import threading
 import time
+
+import qdarktheme
 from PyQt5.QtWidgets import QApplication, QMessageBox
 from PyQt5.QtGui import QIcon
 
@@ -67,6 +69,19 @@ if __name__ == "__main__":
 
     # --- Инициализация QApplication ---
     app = QApplication(sys.argv)
+    logger.info("Применение темной темы через pyqtdarktheme...")
+    try:
+        import qdarktheme
+        # Используем явно "dark" для теста
+        qdarktheme.setup_theme("dark")
+        logger.info("Темная тема pyqtdarktheme применена.")
+    except ImportError:
+        logger.error("Библиотека pyqtdarktheme не найдена. Установите: pip install pyqtdarktheme")
+    except AttributeError:
+        logger.error(
+            "Ошибка атрибута в pyqtdarktheme. Вероятно, установлена старая версия без setup_theme. Обновите: pip install --upgrade pyqtdarktheme")
+    except Exception as e:
+        logger.warning(f"Не удалось применить тему qdarktheme: {e}. Будет использована стандартная тема.")
 
     # --- Запуск планировщика в фоновом потоке ---
     scheduler_db_config = db_config.copy() # Отдельная копия конфига для потока
@@ -82,14 +97,13 @@ if __name__ == "__main__":
         main_window.show()
         logger.info("Главное окно приложения отображено.")
     except Exception as e:
-         logger.exception("Ошибка при создании главного окна!")
-         QMessageBox.critical(None, "Ошибка UI", f"Не удалось создать интерфейс пользователя:\n{e}")
-         stop_scheduler_flag.set() # Сигнал потоку планировщика на остановку
-         scheduler_thread.join(timeout=5) # Ждем завершения потока
-         if hasattr(main_window, 'db_manager') and main_window.db_manager:
-              main_window.db_manager.close_pool()
-         sys.exit(1)
-
+        logger.exception("Ошибка при создании главного окна!")
+        QMessageBox.critical(None, "Ошибка UI", f"Не удалось создать интерфейс пользователя:\n{e}")
+        stop_scheduler_flag.set() # Сигнал потоку планировщика на остановку
+        scheduler_thread.join(timeout=5) # Ждем завершения потока
+        if hasattr(main_window, 'db_manager') and main_window.db_manager:
+            main_window.db_manager.close_pool()
+        sys.exit(1)
 
     # --- Основной цикл приложения ---
     exit_code = app.exec_()

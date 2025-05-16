@@ -1,11 +1,13 @@
 # scheduler.py
+import os
+
 import pandas as pd
 from apscheduler.schedulers.background import BackgroundScheduler
 from datetime import datetime, date, timedelta
 import traceback
 import time
 
-from config import get_logger # Используем настроенный логгер
+from config import get_logger, get_scheduler_output_dir  # Используем настроенный логгер
 from database_manager import DatabaseManager
 from file_manager import FileManager
 
@@ -14,6 +16,8 @@ class Scheduler:
     def __init__(self, db_config):
         self.logger = get_logger(__name__)
         self.scheduler = BackgroundScheduler(timezone="Europe/Moscow")
+        self.output_dir = get_scheduler_output_dir()
+        os.makedirs(self.output_dir, exist_ok=True)  # Создаем папку, если ее нет
         # Создаем свой экземпляр DB Manager для планировщика
         try:
              self.db_manager = DatabaseManager(db_config)
@@ -73,66 +77,130 @@ class Scheduler:
              self.logger.info("Нет сотрудников Подрядчиков со статусом 'в ожидании' для генерации файла.")
 
 
-    def transfer_from_td_to_accrtable_job(self):
-        """Задача: Переносит данные из временной таблицы TD в основную AccrTable."""
-        self.logger.info("Начало переноса сотрудников из TD в AccrTable.")
+    def generate_weekly_check_file_job(self):
+        """
+        Задача: Собирает данные из TD, сохраняет в файл,
+        ДОБАВЛЯЕТ их в AccrTable со статусом 'в ожидании' и очищает TD.
+        """
+        self.logger.info("Начало еженедельной выгрузки данных из TD и добавления в AccrTable.")
         employees_in_td = self.db_manager.get_all_from_td_full()
 
         if not employees_in_td:
-            self.logger.info("Временная таблица TD пуста. Перенос не требуется.")
+            self.logger.info("Временная таблица TD пуста. Операции не требуются.")
             return
 
-        added_count = 0
-        failed_count = 0
-        for employee_data in employees_in_td:
-            # Преобразуем RealDictRow в обычный dict для передачи в add_to_accrtable
-            data_dict = dict(employee_data)
-            # Статус берем из TD (установлен при проверке в UI) или 'в ожидании' по умолчанию
-            status = data_dict.get('status', 'в ожидании')
-            person_id = self.db_manager.add_to_accrtable(data_dict, status=status)
-            if person_id:
-                added_count += 1
-                # Логируем перенос внутри add_to_accrtable или здесь
-                # self.db_manager.log_transaction(person_id, 'Перенесен из TD', f'Статус при переносе: {status}')
-            else:
-                failed_count += 1
-                self.logger.error(f"Не удалось перенести сотрудника из TD: {data_dict.get('surname')} {data_dict.get('name')}")
+        df_to_check = pd.DataFrame(employees_in_td)
+        self.logger.info(f"Собрано {len(df_to_check)} записей из TD.")
 
-        self.logger.info(f"Перенос из TD завершен. Успешно: {added_count}, Ошибок: {failed_count}.")
+        # --- Шаг 1: Генерация файла ---
+        # ... (код генерации df_report как в предыдущем исправлении) ...
+        cols_to_keep = ['surname', 'name', 'middle_name', 'birth_date', 'birth_place',
+                        'registration', 'organization', 'position', 'notes', 'status'] # Добавили notes
+        df_report = df_to_check[[col for col in cols_to_keep if col in df_to_check.columns]].copy()
+        rename_map = {
+             'surname': 'Фамилия', 'name': 'Имя', 'middle_name': 'Отчество',
+             'birth_date': 'Дата рождения', 'birth_place': 'Место рождения',
+             'registration': 'Адрес регистрации', 'organization': 'Организация',
+             'position': 'Должность', 'notes': 'Примечания', # Добавили notes
+             'status': 'Статус проверки (из файла)'
+        }
+        df_report.rename(columns=rename_map, inplace=True)
+        if 'Дата рождения' in df_report.columns:
+             df_report['Дата рождения'] = pd.to_datetime(df_report['Дата рождения']).dt.strftime('%d.%m.%Y')
 
-        # Очищаем TD только если перенос был успешным (или по другой логике)
-        if failed_count == 0 and added_count > 0:
-            self.db_manager.clean_td()
-        elif failed_count > 0:
-            self.logger.warning("Временная таблица TD не была очищена из-за ошибок при переносе.")
+        filename_prefix = "Еженедельный_список_на_проверку"
+        saved_path = self.file_manager.generate_file_scheduler(df_report, filename_prefix)
 
+        if not saved_path:
+            self.logger.error("Не удалось сохранить еженедельный файл 'На проверку'. Перенос в AccrTable и очистка TD НЕ будут выполнены.")
+            return # Прерываем операцию, если файл не сохранен
+
+        self.logger.info(f"Еженедельный файл 'На проверку' сохранен: {saved_path}")
+
+        # --- Шаг 2: Добавление в AccrTable ---
+        added_to_accr_count = 0
+        failed_on_accr_count = 0
+        self.logger.info(f"Начало добавления {len(employees_in_td)} записей из TD в AccrTable со статусом 'в ожидании'...")
+
+        for employee_data_row in employees_in_td:
+             # Преобразуем RealDictRow в dict
+             data_dict = dict(employee_data_row)
+             # Используем ключи как в DataFrame для add_to_accrtable
+             # Переименовываем ключи (если они не совпадают с ожидаемыми в add_to_accrtable)
+             # Если add_to_accrtable ожидает 'Фамилия', 'Имя', то используем их
+             data_for_accr = {
+                 'Фамилия': data_dict.get('surname'),
+                 'Имя': data_dict.get('name'),
+                 'Отчество': data_dict.get('middle_name'),
+                 'Дата рождения': data_dict.get('birth_date'),
+                 'Место рождения': data_dict.get('birth_place'),
+                 'Регистрация': data_dict.get('registration'),
+                 'Организация': data_dict.get('organization'),
+                 'Должность': data_dict.get('position'),
+                 'Примечания': data_dict.get('notes') # Передаем примечания
+             }
+             # --- ПРОВЕРКА ПЕРЕД ДОБАВЛЕНИЕМ ---
+             existing_person_id = self.db_manager.find_person_in_accrtable(
+                 data_for_accr.get('Фамилия'),
+                 data_for_accr.get('Имя'),
+                 data_for_accr.get('Отчество'),
+                 data_for_accr.get('Дата рождения')
+             )
+             if existing_person_id:
+                 self.logger.info(
+                     f"Сотрудник {data_for_accr.get('Фамилия')} {data_for_accr.get('Имя')} уже существует в AccrTable (ID: {existing_person_id}). Пропуск добавления.")
+                 # Опционально: обновить существующую запись? Или добавить примечание?
+                 # self.db_manager.update_notes(existing_person_id, data_for_accr.get('Примечания', ''))
+                 continue  # Переходим к сле
+
+             person_id = self.db_manager.add_to_accrtable(data_for_accr, status='в ожидании')
+             if person_id:
+                 added_to_accr_count += 1
+             else:
+                 failed_on_accr_count += 1
+                 self.logger.error(f"Не удалось добавить в AccrTable: {data_for_accr.get('Фамилия')} {data_for_accr.get('Имя')}")
+
+        self.logger.info(f"Добавление в AccrTable завершено. Успешно: {added_to_accr_count}, Ошибок: {failed_on_accr_count}.")
+
+        # --- Шаг 3: Очистка TD ---
+        # Очищаем TD, даже если были ошибки добавления в AccrTable, т.к. файл уже создан
+        # (или изменить логику, если нужно гарантировать перенос)
+        if failed_on_accr_count > 0:
+             self.logger.warning("Были ошибки при добавлении записей в AccrTable.")
+
+        cleaned = self.db_manager.clean_td()
+        if cleaned:
+            self.logger.info("Временная таблица TD успешно очищена после еженедельной обработки.")
+        else:
+            self.logger.error("Не удалось очистить временную таблицу TD после еженедельной обработки!")
 
     def start(self):
         """Добавляет задачи и запускает планировщик."""
         if not self.scheduler:
-             self.logger.error("Планировщик не инициализирован (возможно, ошибка БД). Запуск отменен.")
-             return
+            self.logger.error("Планировщик не инициализирован. Запуск отменен.")
+            return
 
         try:
             self.logger.info("Добавление задач в планировщик...")
-            # Проверка истекших аккредитаций - каждый день в полночь
+            # Задача проверки истекших аккредитаций (ежедневно)
             self.scheduler.add_job(
                 lambda: self._run_job(self.check_accreditation_expiry_job, "Check Expiry"),
-                "cron", hour=0, minute=5, id="check_expiry"
+                "cron", hour=0, minute=5, id="check_expiry", replace_existing=True
             )
-            # Генерация файлов на проверку - каждый четверг в 10:00
+            # Задача генерации файлов для ПОВТОРНОЙ проверки (если статус 'в ожидании') - оставляем?
+            # Возможно, ее логика теперь избыточна, если основной поток идет через TD. Решите, нужна ли она.
             self.scheduler.add_job(
                 lambda: self._run_job(self.generate_recheck_files_job, "Generate Recheck Files"),
-                "cron", day_of_week="thu", hour=10, minute=0, id="generate_recheck"
+                "cron", day_of_week="thu", hour=10, minute=0, id="generate_recheck", replace_existing=True
             )
-            # Перенос из TD в AccrTable - каждый четверг в 13:00
+            # НОВАЯ Задача еженедельной выгрузки из TD (например, в пятницу вечером)
             self.scheduler.add_job(
-                 lambda: self._run_job(self.transfer_from_td_to_accrtable_job, "Transfer TD to AccrTable"),
-                 "cron", day_of_week="thu", hour=13, minute=0, id="transfer_td"
+                lambda: self._run_job(self.generate_weekly_check_file_job, "Generate Weekly Check File from TD"),
+                "cron", day_of_week="thu", hour=13, minute=0, id="generate_weekly_td", replace_existing=True
             )
 
             self.scheduler.start()
-            self.logger.info("Планировщик успешно запущен с задачами.")
+            self.logger.info("Планировщик успешно запущен с обновленными задачами.")
 
         except Exception as e:
             self.logger.exception(f"Критическая ошибка при запуске планировщика или добавлении задач: {e}")

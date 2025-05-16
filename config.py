@@ -26,6 +26,13 @@ def get_logger(name):
     """Возвращает настроенный логгер."""
     return logging.getLogger(name)
 
+def get_scheduler_output_dir():
+    """Возвращает путь к папке для вывода файлов планировщика."""
+    default_dir = os.path.join(os.getcwd(), "scheduler_output") # По умолчанию папка в корне проекта
+    output_dir = os.getenv('SCHEDULER_OUTPUT_DIR', default_dir)
+    # Можно добавить проверку существования и создание папки здесь или в планировщике
+    return output_dir
+
 def get_db_config():
     """
     Загружает конфигурацию БД из переменных окружения.

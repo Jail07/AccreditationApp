@@ -125,6 +125,13 @@ class DataProcessor:
         """
         suspicious_indices = set()
         self.logger.info("Поиск строк с необычными именами...")
+
+        # --- ДОБАВЛЕНА ПРОВЕРКА ТИПА ---
+        if not isinstance(df, pd.DataFrame):
+            self.logger.error(f"Ошибка в detect_unusual_names: ожидался DataFrame, получен {type(df)}.")
+            return list(suspicious_indices)  # Возвращаем пустой список
+        # --- КОНЕЦ ДОБАВЛЕННОЙ ПРОВЕРКИ ---
+
         for col in columns:
             if col in df.columns:
                 for index, value in df[col].dropna().items(): # Пропускаем NaN
@@ -137,27 +144,89 @@ class DataProcessor:
         self.logger.info(f"Найдено {len(suspicious_indices)} строк с потенциально необычными именами.")
         return list(suspicious_indices)
 
+        # data_processing.py (добавление нового метода)
+
+    def validate_dates(self, df, date_column='Дата рождения', min_year=1950):
+        """
+        Проверяет корректность дат в указанной колонке.
+        Возвращает словарь {индекс: сообщение_об_ошибке}.
+        """
+        self.logger.info(f"Проверка дат в колонке '{date_column}' (год >= {min_year}).")
+        date_errors = {}
+
+        # --- ДОБАВЛЕНА ПРОВЕРКА ТИПА ---
+        if not isinstance(df, pd.DataFrame):
+            self.logger.error(f"Ошибка в validate_dates: ожидался DataFrame, получен {type(df)}.")
+            return date_errors # Возвращаем пустой словарь ошибок
+        # --- КОНЕЦ ДОБАВЛЕННОЙ ПРОВЕРКИ ---
+
+        if date_column not in df.columns:
+            self.logger.warning(f"Колонка '{date_column}' для проверки дат не найдена в DataFrame.")
+            return date_errors
+
+        # ... (остальной код проверки дат без изменений) ...
+        for index, value in df[date_column].items():
+             # Проверяем только если дата не NaT/None и является объектом date/datetime
+            if pd.notna(value) and isinstance(value, (date, datetime)):
+                if value.year < min_year:
+                    error_msg = f"Год рождения ({value.year}) меньше допустимого ({min_year})."
+                    date_errors[index] = error_msg
+                    self.logger.warning(f"Обнаружена некорректная дата: {value.strftime('%d.%m.%Y')} в строке {index+1}. {error_msg}")
+
+        if date_errors:
+            self.logger.warning(f"Обнаружено {len(date_errors)} строк с некорректными датами.")
+        else:
+            self.logger.info("Ошибок в датах не обнаружено.")
+        return date_errors
+
+    # data_processing.py (метод validate_data)
     def validate_data(self, df):
-        """
-        Проверяет наличие обязательных полей после очистки.
-        Возвращает DataFrame с колонкой 'Validation_Errors'.
-        """
         self.logger.info("Проверка наличия обязательных полей.")
+        self.logger.debug(f"Тип df НА ВХОДЕ в validate_data: {type(df)}")
+        if not isinstance(df, pd.DataFrame):
+            self.logger.error(f"validate_data получил НЕ DataFrame: {type(df)}")
+            return pd.DataFrame()
+
         validated_df = df.copy()
+        self.logger.debug(f"Тип validated_df ПОСЛЕ КОПИРОВАНИЯ: {type(validated_df)}")
+
         required_fields = ['Фамилия', 'Имя', 'Дата рождения', 'Организация']
         errors = []
+        try:  # Добавим try-except на всякий случай
+            for index, row in validated_df.iterrows():
+                row_errors = []
+                for field in required_fields:
+                    # Проверяем наличие колонки перед доступом к row[field]
+                    if field not in validated_df.columns:
+                        row_errors.append(f"Отсутствует колонка '{field}'")
+                        continue  # Переходим к следующему полю
 
-        for index, row in validated_df.iterrows():
-            row_errors = []
-            for field in required_fields:
-                if field not in row or pd.isna(row[field]) or str(row[field]).strip() == '':
-                    row_errors.append(f"Отсутствует '{field}'")
-            errors.append("; ".join(row_errors) if row_errors else None)
+                    if field not in row or pd.isna(row[field]) or str(row[field]).strip() == '':
+                        row_errors.append(f"Отсутствует '{field}'")
+                errors.append("; ".join(row_errors) if row_errors else None)
 
-        validated_df['Validation_Errors'] = errors
+            # Проверяем длину списка ошибок
+            if len(errors) != len(validated_df):
+                self.logger.error(
+                    f"Длина списка ошибок ({len(errors)}) не совпадает с длиной DataFrame ({len(validated_df)})!")
+                # В случае несовпадения, создаем список None правильной длины
+                errors = [None] * len(validated_df)
+
+            validated_df['Validation_Errors'] = errors
+            self.logger.debug(f"Тип validated_df ПОСЛЕ ДОБАВЛЕНИЯ КОЛОНКИ: {type(validated_df)}")
+
+        except Exception as e:
+            self.logger.exception(f"Неожиданная ошибка внутри цикла validate_data: {e}")
+            # В случае ошибки вернем исходную копию без колонки ошибок
+            return validated_df.copy()  # Возвращаем копию без изменений
+
         num_invalid = validated_df['Validation_Errors'].notna().sum()
         if num_invalid > 0:
-             self.logger.warning(f"Обнаружено {num_invalid} строк с ошибками валидации.")
+            self.logger.warning(f"Обнаружено {num_invalid} строк с ошибками валидации.")
         else:
             self.logger.info("Ошибок валидации обязательных полей не найдено.")
-        return validated_df
+
+        # Возвращаем ЯВНУЮ копию еще раз
+        final_df = validated_df.copy()
+        self.logger.debug(f"Тип final_df ПЕРЕД RETURN в validate_data: {type(final_df)}")
+        return final_df

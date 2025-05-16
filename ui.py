@@ -1,8 +1,9 @@
 # ui.py
+import inspect
 import os
 import sys
 import pandas as pd
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 import pytz
 import logging
 import traceback
@@ -12,9 +13,9 @@ from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QPushButton, QTableWidget,
     QTableWidgetItem, QTextEdit, QLabel, QMessageBox, QApplication, QSplitter,
     QHeaderView, QAbstractItemView, QStyleFactory, QProgressDialog, QDialog,
-    QFormLayout, QCheckBox, QDialogButtonBox
+    QFormLayout, QCheckBox, QDialogButtonBox, QTableView, QInputDialog
 )
-from PyQt5.QtGui import QIcon, QColor, QBrush, QPalette, QFont
+from PyQt5.QtGui import QIcon, QColor, QBrush, QPalette, QFont, QStandardItem, QStandardItemModel
 from PyQt5.QtCore import Qt, QRunnable, QThreadPool, pyqtSignal, QObject, pyqtSlot, QThread
 
 from config import get_logger
@@ -30,6 +31,7 @@ class WorkerSignals(QObject):
     progress = pyqtSignal(int)    # Сигнал прогресса (0-100)
     log = pyqtSignal(str, str)    # Сигнал для логирования (message, level)
     request_confirmation = pyqtSignal(str, int) # Запрос подтверждения у пользователя (message, row_index)
+    request_new_employee_action = pyqtSignal(dict, int)
 
 class Worker(QRunnable):
     """Исполнитель задач в отдельном потоке"""
@@ -40,19 +42,36 @@ class Worker(QRunnable):
         self.kwargs = kwargs
         self.signals = WorkerSignals()
         # Добавляем сигналы в kwargs, чтобы функция могла их использовать
-        self.kwargs['signals'] = self.signals
+        # self.kwargs['signals'] = self.signals
 
     @pyqtSlot()
     def run(self):
         try:
             self.signals.log.emit(f"Запуск задачи {self.fn.__name__} в фоновом потоке...", "DEBUG")
-            result = self.fn(*self.args, **self.kwargs)
+
+            # --- ИЗМЕНЕНИЕ ЗДЕСЬ: Проверяем, принимает ли функция 'signals' ---
+            func_signature = inspect.signature(self.fn)
+            pass_signals = False
+            if 'signals' in func_signature.parameters:
+                pass_signals = True
+            else:
+                # Проверяем наличие **kwargs
+                for param in func_signature.parameters.values():
+                    if param.kind == param.VAR_KEYWORD:  # VAR_KEYWORD соответствует **kwargs
+                        pass_signals = True
+                        break
+
+            final_kwargs = self.kwargs.copy()
+            if pass_signals:
+                final_kwargs['signals'] = self.signals
+
+            result = self.fn(*self.args, **final_kwargs)  # Используем final_kwargs
             self.signals.log.emit(f"Задача {self.fn.__name__} завершена.", "DEBUG")
             self.signals.finished.emit(result)
         except Exception as e:
             error_msg = f"Ошибка в фоновой задаче {self.fn.__name__}: {e}\n{traceback.format_exc()}"
             self.signals.log.emit(error_msg, "ERROR")
-            self.signals.error.emit(str(e)) # Отправляем краткое сообщение об ошибке
+            self.signals.error.emit(str(e))
 
 # --- Диалог подтверждения необычных имен ---
 class ConfirmationDialog(QDialog):
@@ -78,6 +97,54 @@ class ConfirmationDialog(QDialog):
     def is_confirmed(self):
         return self.result() == QDialog.Accepted and self.confirm_checkbox.isChecked()
 
+class HistoryDialog(QDialog):
+    def __init__(self, history_records, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle("История операций")
+        self.setMinimumSize(600, 400)
+
+        layout = QVBoxLayout(self)
+        self.historyTable = QTableView() # Используем QTableView для лучшей производительности
+        self.historyTable.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.historyTable.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.historyTable.setSelectionMode(QAbstractItemView.SingleSelection)
+        self.historyTable.setAlternatingRowColors(True)
+        self.historyTable.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch)
+        self.historyTable.setSortingEnabled(True) # Включаем сортировку
+
+        layout.addWidget(self.historyTable)
+
+        # Кнопка Закрыть
+        buttons = QDialogButtonBox(QDialogButtonBox.Close, Qt.Horizontal, self)
+        buttons.rejected.connect(self.reject) # Close привязан к reject
+        layout.addWidget(buttons)
+
+        self.populate_history(history_records)
+
+    def populate_history(self, records):
+        model = QStandardItemModel(len(records), 3, self) # Строки, 3 колонки
+        model.setHorizontalHeaderLabels(['Дата операции', 'Тип операции', 'Детали'])
+
+        if not records: # Проверка на пустой список
+             return model
+
+        # Устанавливаем таймзону для отображения
+        local_tz = pytz.timezone("Europe/Moscow") # Или используйте self.timezone из основного окна
+
+        for i, record in enumerate(records):
+            # Преобразование времени в локальное
+            dt_aware = record['operation_date'].astimezone(local_tz)
+            dt_str = dt_aware.strftime('%Y-%m-%d %H:%M:%S')
+
+            model.setItem(i, 0, QStandardItem(dt_str))
+            model.setItem(i, 1, QStandardItem(record.get('operation_type', '')))
+            model.setItem(i, 2, QStandardItem(record.get('details', '')))
+
+        self.historyTable.setModel(model)
+        self.historyTable.resizeColumnsToContents()
+        self.historyTable.horizontalHeader().setSectionResizeMode(2, QHeaderView.Stretch) # Растягиваем Детали
+        self.historyTable.sortByColumn(0, Qt.DescendingOrder) # Сортируем по дате (сначала новые)
+
 # --- Основное окно приложения ---
 class AccreditationApp(QWidget):
     # Сигнал для обновления UI из другого потока
@@ -86,10 +153,18 @@ class AccreditationApp(QWidget):
     update_notes_signal = pyqtSignal(str)
     task_finished_signal = pyqtSignal(str) # Сигнал завершения долгой задачи
     ask_confirmation_signal = pyqtSignal(str, int) # Сигнал для запроса подтверждения
+    ask_new_employee_action_signal = pyqtSignal(dict, int)
+
+    COL_STATUS_DB = 7
+    COL_STATUS_PROV = 8
+    COL_ERR_VALID = 9
+    COL_PRIM = 10
+    COL_START_AKKR = 11
+    COL_END_AKKR = 12
 
     # Словарь для хранения подтверждений пользователя по индексам строк
     user_confirmations = {}
-
+    new_employee_actions = {}  # Для новых сотрудников в файле активации
     def __init__(self, db_manager: DatabaseManager, logger: logging.Logger):
         super().__init__()
         self.db_manager = db_manager
@@ -114,6 +189,7 @@ class AccreditationApp(QWidget):
         self.update_notes_signal.connect(self.displayNotes)
         self.task_finished_signal.connect(self.on_task_finished)
         self.ask_confirmation_signal.connect(self.handle_confirmation_request)
+        self.ask_new_employee_action_signal.connect(self.handle_new_employee_action_request)
 
     def logMessage(self, message, level="INFO"):
         """Логирует сообщение в QTextEdit и стандартный логгер."""
@@ -131,10 +207,10 @@ class AccreditationApp(QWidget):
         timestamp = datetime.now(self.timezone).strftime("%Y-%m-%d %H:%M:%S")
         color_map = {
             "DEBUG": "grey",
-            "INFO": "black",
+            "INFO": "green",
             "WARNING": "orange",
-            "ERROR": "red",
-            "CRITICAL": "darkred"
+            "ERROR": "darkred",
+            "CRITICAL": "red"
         }
         color = color_map.get(level.upper(), "black")
         formatted_message = f'<font color="{color}">[{timestamp}] [{level.upper()}] {message}</font>'
@@ -142,7 +218,7 @@ class AccreditationApp(QWidget):
 
     def initUI(self):
         """Инициализация интерфейса."""
-        self.setWindowTitle('Система Учета Аккредитации v1.0') # Новое название
+        self.setWindowTitle('Система Учета Аккредитации v2.0') # Новое название
         # Установка иконки (замените 'icon.png' на путь к вашей иконке)
         try:
             self.setWindowIcon(QIcon('icon.png'))
@@ -151,124 +227,180 @@ class AccreditationApp(QWidget):
 
         # --- Основной Layout ---
         main_layout = QVBoxLayout(self)
-        splitter = QSplitter(Qt.Horizontal)
+        splitter = QSplitter(Qt.Horizontal)  # Используем горизонтальный разделитель
 
-        # --- Левая панель (Управление и Лог) ---
+        # --- Левая панель (Таблица, Поиск, Примечания) ---
         left_panel = QWidget()
         left_layout = QVBoxLayout(left_panel)
 
-        # Кнопки управления
+        # --- Правая панель (Управление файлами, Лог) ---
+        right_panel = QWidget()
+        right_layout = QVBoxLayout(right_panel)
+
+        # Поиск, ЧС, История, Активация файлом
+        action_layout = QHBoxLayout()
+        action_layout.addWidget(QLabel("Поиск:"))
+        self.searchEdit = QLineEdit()
+        self.searchEdit.setPlaceholderText("Введите ФИО или организацию...")
+        self.searchEdit.returnPressed.connect(self.run_search_people)
+        self.btnSearch = QPushButton("Найти")
+        self.btnSearch.clicked.connect(self.run_search_people)
+        self.btnBlacklist = QPushButton("В ЧС / Из ЧС")
+        self.btnBlacklist.clicked.connect(self.run_manage_blacklist)
+        self.btnHistory = QPushButton("История")
+        self.btnHistory.clicked.connect(self.run_show_history)
+        self.btnLoadActivation = QPushButton("Загрузить файл активации")  # <-- Новая кнопка
+        self.btnLoadActivation.clicked.connect(self.run_process_activation_file)  # <-- Новый слот
+
+        action_layout.addWidget(self.searchEdit)
+        action_layout.addWidget(self.btnSearch)
+        action_layout.addWidget(self.btnBlacklist)
+        # УБРАЛИ self.btnSetActive
+        action_layout.addWidget(self.btnHistory)
+        action_layout.addWidget(self.btnLoadActivation)  # <-- Добавили кнопку активации
+        right_layout.addLayout(action_layout)
+
+
+        # Кнопки управления файлами и добавления в БД
         control_layout = QHBoxLayout()
-        self.btnLoad = QPushButton("Загрузить файл")
-        self.btnLoad.clicked.connect(self.run_load_and_process_file) # Запуск через Worker
+        self.btnLoad = QPushButton("Загрузить файл для проверки")
+        self.btnLoad.clicked.connect(self.run_load_and_process_file)
         self.btnSaveReports = QPushButton("Сохранить отчеты")
         self.btnSaveReports.clicked.connect(self.save_generated_reports)
-        self.btnSaveReports.setEnabled(False) # Изначально неактивна
+        self.btnSaveReports.setEnabled(False)
         self.btnAddTD = QPushButton("Добавить 'На проверку' в БД")
-        self.btnAddTD.clicked.connect(self.run_add_to_temporary_db) # Запуск через Worker
-        self.btnAddTD.setEnabled(False) # Изначально неактивна
-
+        self.btnAddTD.clicked.connect(self.run_add_to_temporary_db)
+        self.btnAddTD.setEnabled(False)
         control_layout.addWidget(self.btnLoad)
         control_layout.addWidget(self.btnSaveReports)
         control_layout.addWidget(self.btnAddTD)
         left_layout.addLayout(control_layout)
 
+        # Разделитель или отступ
+        right_layout.addSpacing(10)
+
         # Логгер
-        left_layout.addWidget(QLabel("Лог операций:"))
+        right_layout.addWidget(QLabel("Лог операций:"))
         self.logText = QTextEdit()
         self.logText.setReadOnly(True)
         left_layout.addWidget(self.logText)
 
-        splitter.addWidget(left_panel)
-
-        # --- Правая панель (Таблица, Поиск, Примечания) ---
-        right_panel = QWidget()
-        right_layout = QVBoxLayout(right_panel)
-
-        # Поиск и управление ЧС
-        search_layout = QHBoxLayout()
-        search_layout.addWidget(QLabel("Поиск:"))
-        self.searchEdit = QLineEdit()
-        self.searchEdit.setPlaceholderText("Введите ФИО или организацию...")
-        self.searchEdit.returnPressed.connect(self.run_search_people) # Запуск через Worker
-        self.btnSearch = QPushButton("Найти")
-        self.btnSearch.clicked.connect(self.run_search_people) # Запуск через Worker
-        self.btnBlacklist = QPushButton("В ЧС / Из ЧС")
-        self.btnBlacklist.clicked.connect(self.run_manage_blacklist) # Запуск через Worker
-        search_layout.addWidget(self.searchEdit)
-        search_layout.addWidget(self.btnSearch)
-        search_layout.addWidget(self.btnBlacklist)
-        right_layout.addLayout(search_layout)
+        splitter.addWidget(right_panel)
 
         # Таблица данных
         self.dataTable = QTableWidget()
-        self.dataTable.setColumnCount(10) # Увеличено для статуса и ID
+        self.dataTable.setColumnCount(13) # Увеличено для статуса и ID
         self.dataTable.setHorizontalHeaderLabels([
             'ID', 'Фамилия', 'Имя', 'Отчество', 'Дата рождения',
-            'Организация', 'Должность', 'Статус БД', 'Статус Проверки', 'Ошибки Валидации'
+            'Организация', 'Должность', 'Статус БД', 'Статус Проверки',
+            'Ошибки Валидации', 'Прим.',
+            'Начало аккр.', 'Конец аккр.'
         ])
         self.dataTable.setEditTriggers(QAbstractItemView.NoEditTriggers) # Запрет редактирования
         self.dataTable.setSelectionBehavior(QAbstractItemView.SelectRows) # Выделение строк
         self.dataTable.setSelectionMode(QAbstractItemView.SingleSelection) # Только одна строка
         self.dataTable.horizontalHeader().setSectionResizeMode(QHeaderView.Stretch) # Растягивание колонок
         self.dataTable.itemSelectionChanged.connect(self.on_table_selection_changed) # Загрузка примечаний при выборе
+        self.dataTable.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents) # ID
+        self.dataTable.horizontalHeader().setSectionResizeMode(10, QHeaderView.ResizeToContents)  # Прим.
+        self.dataTable.horizontalHeader().setSectionResizeMode(11, QHeaderView.ResizeToContents)  # Дата добавл.
+        self.dataTable.horizontalHeader().setSectionResizeMode(12, QHeaderView.ResizeToContents)  # Конец аккр.
         right_layout.addWidget(self.dataTable)
 
-        # Примечания
+        # Примечания (ЕДИНОЕ ПОЛЕ)
         notes_layout = QVBoxLayout()
-        notes_layout.addWidget(QLabel("Примечания к выбранной записи:"))
+        notes_layout.addWidget(QLabel("Примечания:"))
         self.notesEdit = QTextEdit()
-        self.notesEdit.setPlaceholderText("Выберите запись в таблице для просмотра или редактирования примечаний...")
-        self.notesEdit.setReadOnly(True) # Изначально только чтение
-        self.btnSaveNotes = QPushButton("Сохранить примечания")
-        self.btnSaveNotes.setEnabled(False) # Неактивна, пока не выбрана строка
-        self.btnSaveNotes.clicked.connect(self.run_save_notes) # Запуск через Worker
-        notes_layout.addWidget(self.notesEdit)
-        notes_layout.addWidget(self.btnSaveNotes, alignment=Qt.AlignRight)
-        right_layout.addLayout(notes_layout)
+        self.notesEdit.setPlaceholderText(
+            "Примечания к выбранной записи ИЛИ введите сюда примечания ПЕРЕД добавлением в БД...")
 
-        splitter.addWidget(right_panel)
-        splitter.setSizes([int(self.width() * 0.4), int(self.width() * 0.6)]) # Размеры панелей
+        # --- Кнопки для примечаний ---
+        notes_buttons_layout = QHBoxLayout()
+        self.btnSaveNotes = QPushButton("Сохранить (выбранному)")  # Уточнили название
+        self.btnSaveNotes.setEnabled(False)
+        self.btnSaveNotes.clicked.connect(self.run_save_notes_for_selected)  # Новый отдельный слот
+
+        self.btnSaveNotesForAll = QPushButton("Сохранить для всех (в таблице)")  # <-- Новая кнопка
+        self.btnSaveNotesForAll.clicked.connect(self.run_save_notes_for_all_visible)  # <-- Новый слот
+
+        notes_buttons_layout.addWidget(self.btnSaveNotes)
+        notes_buttons_layout.addWidget(self.btnSaveNotesForAll)
+        # --- Конец кнопок ---
+        notes_layout.addWidget(self.notesEdit)
+        notes_layout.addLayout(notes_buttons_layout)  # Добавляем кнопки под полем
+        left_layout.addLayout(notes_layout)
+
+        splitter.addWidget(left_panel)  # Добавляем левую панель (таблица)
+        # Установка начальных размеров панелей (например, 70% таблица, 30% лог)
+        total_width = self.width() if self.width() > 0 else 1200  # Базовая ширина
+        splitter.setSizes([int(total_width * 0.7), int(total_width * 0.3)])
 
         main_layout.addWidget(splitter)
         self.setLayout(main_layout)
 
         # Применение темной темы
-        self.apply_dark_theme()
+        # self.apply_dark_theme()
 
         self.resize(1200, 800) # Установка размера окна
 
-    def apply_dark_theme(self):
-        """Применяет темную тему Fusion."""
-        QApplication.setStyle(QStyleFactory.create('Fusion'))
-        dark_palette = QPalette()
-        dark_color = QColor(45, 45, 45)
-        disabled_color = QColor(127, 127, 127)
-        text_color = Qt.white
-        highlight_color = QColor(42, 130, 218)
-
-        dark_palette.setColor(QPalette.Window, dark_color)
-        dark_palette.setColor(QPalette.WindowText, text_color)
-        dark_palette.setColor(QPalette.Base, QColor(35, 35, 35))
-        dark_palette.setColor(QPalette.AlternateBase, dark_color)
-        dark_palette.setColor(QPalette.ToolTipBase, text_color)
-        dark_palette.setColor(QPalette.ToolTipText, text_color)
-        dark_palette.setColor(QPalette.Text, text_color)
-        dark_palette.setColor(QPalette.Disabled, QPalette.Text, disabled_color)
-        dark_palette.setColor(QPalette.Button, dark_color)
-        dark_palette.setColor(QPalette.ButtonText, text_color)
-        dark_palette.setColor(QPalette.Disabled, QPalette.ButtonText, disabled_color)
-        dark_palette.setColor(QPalette.BrightText, Qt.red)
-        dark_palette.setColor(QPalette.Link, highlight_color)
-        dark_palette.setColor(QPalette.Highlight, highlight_color)
-        dark_palette.setColor(QPalette.HighlightedText, Qt.black)
-        dark_palette.setColor(QPalette.Disabled, QPalette.HighlightedText, disabled_color)
-
-        QApplication.setPalette(dark_palette)
-        self.setStyleSheet("QWidget { color: white; } QToolTip { color: #ffffff; background-color: #2a82da; border: 1px solid white; }")
+    # def apply_dark_theme(self):
+    #     """Применяет темную тему Fusion."""
+    #     QApplication.setStyle(QStyleFactory.create('Fusion'))
+    #     dark_palette = QPalette()
+    #     dark_color = QColor(45, 45, 45)
+    #     disabled_color = QColor(127, 127, 127)
+    #     text_color = Qt.white
+    #     highlight_color = QColor(42, 130, 218)
+    #
+    #     dark_palette.setColor(QPalette.Window, dark_color)
+    #     dark_palette.setColor(QPalette.WindowText, text_color)
+    #     dark_palette.setColor(QPalette.Base, QColor(35, 35, 35))
+    #     dark_palette.setColor(QPalette.AlternateBase, dark_color)
+    #     dark_palette.setColor(QPalette.ToolTipBase, text_color)
+    #     dark_palette.setColor(QPalette.ToolTipText, text_color)
+    #     dark_palette.setColor(QPalette.Text, text_color)
+    #     dark_palette.setColor(QPalette.Disabled, QPalette.Text, disabled_color)
+    #     dark_palette.setColor(QPalette.Button, dark_color)
+    #     dark_palette.setColor(QPalette.ButtonText, text_color)
+    #     dark_palette.setColor(QPalette.Disabled, QPalette.ButtonText, disabled_color)
+    #     dark_palette.setColor(QPalette.BrightText, Qt.red)
+    #     dark_palette.setColor(QPalette.Link, highlight_color)
+    #     dark_palette.setColor(QPalette.Highlight, highlight_color)
+    #     dark_palette.setColor(QPalette.HighlightedText, Qt.black)
+    #     dark_palette.setColor(QPalette.Disabled, QPalette.HighlightedText, disabled_color)
+    #
+    #     QApplication.setPalette(dark_palette)
+    #     self.setStyleSheet("QWidget { color: white; } QToolTip { color: #ffffff; background-color: #2a82da; border: 1px solid white; }")
 
     # --- Слоты для обработки результатов фоновых задач ---
 
+    def update_column_visibility(self, df_for_check):
+        """Скрывает или показывает столбцы в зависимости от их содержимого."""
+        if df_for_check is None or df_for_check.empty:
+            # Если данных нет, можно скрыть все опциональные или показать все
+            self.dataTable.setColumnHidden(self.COL_STATUS_PROV, True)
+            self.dataTable.setColumnHidden(self.COL_ERR_VALID, True)
+            self.dataTable.setColumnHidden(self.COL_PRIM, True)
+            self.dataTable.setColumnHidden(self.COL_START_AKKR, True)
+            self.dataTable.setColumnHidden(self.COL_END_AKKR, True)
+            return
+
+        # Проверяем, есть ли непустые значения (кроме пустых строк и None/NaN)
+        # Преобразуем в строки и удаляем пробелы для проверки на "пустоту"
+        has_status_prov = not df_for_check['Статус Проверки'].astype(str).str.strip().replace('', pd.NA).isna().all()
+        has_err_valid = not df_for_check['Ошибки Валидации'].astype(str).str.strip().replace('', pd.NA).isna().all()
+        has_prim = not df_for_check['Прим.'].astype(str).str.strip().replace('', pd.NA).isna().all()
+        has_start_akkr = not df_for_check['Начало аккр.'].astype(str).str.strip().replace('', pd.NA).isna().all()
+        has_end_akkr = not df_for_check['Конец аккр.'].astype(str).str.strip().replace('', pd.NA).isna().all()
+
+        self.dataTable.setColumnHidden(self.COL_STATUS_PROV, not has_status_prov)
+        self.dataTable.setColumnHidden(self.COL_ERR_VALID, not has_err_valid)
+        self.dataTable.setColumnHidden(self.COL_PRIM, not has_prim)
+        self.dataTable.setColumnHidden(self.COL_START_AKKR, not has_start_akkr)
+        self.dataTable.setColumnHidden(self.COL_END_AKKR, not has_end_akkr)
+
+        # Статус БД всегда показываем, он ключевой
+        self.dataTable.setColumnHidden(self.COL_STATUS_DB, False)
     def on_task_finished(self, task_name):
         """Обработчик завершения фоновой задачи."""
         self.logMessage(f"Задача '{task_name}' завершена.", "INFO")
@@ -313,6 +445,8 @@ class AccreditationApp(QWidget):
             # Очищаем список для добавления и деактивируем кнопку
             self.df_to_add_td = pd.DataFrame()
             self.btnAddTD.setEnabled(False)
+            # НЕ ОЧИЩАЕМ поле notesEdit, пользователь сам решит
+            # self.notesEdit.clear()
         else:
             self.logMessage("Ошибка при добавлении записей в временную таблицу.", "ERROR")
         self.task_finished_signal.emit("Добавление в БД")
@@ -337,14 +471,126 @@ class AccreditationApp(QWidget):
         self.task_finished_signal.emit("Управление черным списком")
 
     def handle_save_notes_result(self, result):
-        """Обработка результата сохранения примечаний."""
-        if isinstance(result, dict) and result.get('success'):
-             self.logMessage(f"Примечания для ID {result.get('person_id')} успешно сохранены.", "INFO")
-        elif isinstance(result, str):
-            self.logMessage(result, "WARNING") # Ошибка или не выбрана строка
+        """Обработка результата сохранения ОДНОГО примечания."""
+        success = result.get('success')
+        message = result.get('message', 'Неизвестный результат.')
+        person_id = result.get('person_id')
+
+        if success:
+             self.logMessage(f"Примечания для ID {person_id} сохранены.", "INFO")
+             # Обновляем индикатор в таблице для этой строки
+             self.update_note_indicator_in_table(person_id, True)
         else:
-             self.logMessage("Ошибка при сохранении примечаний.", "ERROR")
-        self.task_finished_signal.emit("Сохранение примечаний")
+             self.logMessage(f"Ошибка сохранения примечаний для ID {person_id}: {message}", "ERROR")
+             QMessageBox.warning(self, "Ошибка", f"Не удалось сохранить примечания:\n{message}")
+        self.task_finished_signal.emit("Сохранение примечаний (1)")
+
+    def update_note_indicator_in_table(self, person_id, has_notes):
+        """Обновляет индикатор 'Прим.' для строки с заданным ID."""
+        note_indicator = '✓' if has_notes else ''
+        for row in range(self.dataTable.rowCount()):
+            id_item = self.dataTable.item(row, 0)  # ID column
+            note_item = self.dataTable.item(row, 10)  # 'Прим.' column
+            if id_item and id_item.text().isdigit() and int(id_item.text()) == person_id:
+                if note_item:
+                    note_item.setText(note_indicator)
+                else:
+                    # Если ячейки нет, создаем
+                    new_item = QTableWidgetItem(note_indicator)
+                    new_item.setTextAlignment(Qt.AlignCenter)
+                    self.dataTable.setItem(row, 10, new_item)
+                break  # Нашли строку, выходим
+
+    def refresh_current_view(self):
+        """Обновляет текущее представление таблицы (например, повтор поиска)."""
+        # Простейший вариант - повторить последний поиск
+        search_text = self.searchEdit.text()
+        if search_text:
+            self.logMessage("Обновление результатов поиска...", "DEBUG")
+            self.run_search_people()
+        else:
+            # Если поиска не было, можно очистить таблицу или загрузить всё (не рекомендуется)
+            self.dataTable.setRowCount(0)
+
+    @pyqtSlot(dict, int)
+    def handle_new_employee_action_request(self, data_dict, index):
+        """Запрашивает у пользователя действие для нового сотрудника."""
+        fio = f"{data_dict.get('Фамилия', '')} {data_dict.get('Имя', '')} {data_dict.get('Отчество', '')}".strip()
+        items = ("Добавить как 'Активный'", "Добавить в TD 'На проверку'", "Пропустить")
+        item, ok = QInputDialog.getItem(self, "Новый сотрудник",
+                                        f"Сотрудник {fio} не найден в базе.\nВыберите действие:",
+                                        items, 0, False)
+        action = None
+        if ok and item:
+            if item == items[0]:  # Добавить как 'Активный'
+                action = 'activate'
+            elif item == items[1]:  # Добавить в TD 'На проверку'
+                action = 'add_to_td'
+            else:  # Пропустить
+                action = 'skip'
+        else:
+            action = 'skip'  # Считаем пропуском, если диалог отменен
+
+        self.new_employee_actions[index] = action  # Сохраняем выбор пользователя
+        self.logMessage(f"Действие для нового сотрудника {fio} (индекс {index}): {action}", "INFO")
+
+        # --- Слот для сохранения примечания ВЫБРАННОМУ ---
+
+    def run_save_notes_for_selected(self):
+        selected_row_index = self.get_selected_row_index()
+        notes_text = self.notesEdit.toPlainText().strip()  # Получаем актуальный текст
+
+        if selected_row_index is not None:
+            person_id = None
+            person_id_item = self.dataTable.item(selected_row_index, 0)
+            if person_id_item and person_id_item.text().isdigit():
+                person_id = int(person_id_item.text())
+
+            if person_id is None:
+                QMessageBox.warning(self, "Ошибка",
+                                    "Не найден ID сотрудника в выбранной строке для сохранения примечания.")
+                return
+            if not notes_text:  # Проверяем, есть ли что сохранять
+                # Можно спросить "Сохранить пустое примечание?" или просто не делать ничего
+                # self.logMessage(f"Поле примечаний пусто для ID {person_id}. Сохранение отменено.", "INFO")
+                # return
+                pass  # Разрешаем сохранить пустое примечание
+
+            self.logMessage(f"Запуск сохранения примечания для ID: {person_id}", "DEBUG")
+            self.run_task_in_background(self._task_save_notes_for_one, self.handle_save_notes_result, person_id,
+                                        notes_text)
+        else:
+            QMessageBox.information(self, "Информация",
+                                    "Сначала выберите сотрудника в таблице, чтобы сохранить для него примечание.")
+
+        # --- Слот для кнопки "Сохранить для всех" ---
+
+    def run_save_notes_for_all_visible(self):
+        notes_text = self.notesEdit.toPlainText().strip()
+        if not notes_text:
+            QMessageBox.information(self, "Информация", "Поле примечаний пусто. Нечего сохранять для всех.")
+            return
+
+        visible_ids = []
+        for row in range(self.dataTable.rowCount()):
+            id_item = self.dataTable.item(row, 0)
+            if id_item and id_item.text().isdigit():
+                visible_ids.append(int(id_item.text()))
+
+        if not visible_ids:
+            QMessageBox.warning(self, "Нет данных",
+                                "В таблице нет сотрудников с ID из основной базы, для которых можно было бы сохранить примечание.")
+            return
+
+        reply = QMessageBox.question(self, 'Подтверждение',
+                                     f"Сохранить введенное примечание для ВСЕХ {len(visible_ids)} видимых сотрудников в таблице (у кого есть ID)?",
+                                     QMessageBox.Yes | QMessageBox.Cancel, QMessageBox.Cancel)
+        if reply == QMessageBox.Yes:
+            self.logMessage(f"Запуск массового сохранения примечания для {len(visible_ids)} ID...", "DEBUG")
+            self.run_task_in_background(self._task_save_notes_for_many, self.handle_save_notes_mass_result, visible_ids,
+                                        notes_text)
+        else:
+            self.logMessage("Массовое сохранение примечаний отменено.", "INFO")
 
     # --- Методы, выполняемые в фоновых потоках ---
 
@@ -358,7 +604,24 @@ class AccreditationApp(QWidget):
         signals.log.emit(f"Загрузка данных из {os.path.basename(file_name)}...", "INFO")
         try:
             self.df_loaded = pd.read_excel(file_name, engine='openpyxl')
-            signals.log.emit(f"Загружено {len(self.df_loaded)} строк.", "INFO")
+            signals.log.emit(f"Загружено {len(self.df_loaded)} строк (до очистки пустых).", "INFO")
+
+            # --- ДОБАВЛЕНО: Удаление пустых строк ---
+            initial_rows = len(self.df_loaded)
+            cols_to_check = self.df_loaded.columns.tolist()
+            if cols_to_check and ('№ п/п' in cols_to_check[0] or 'пп' in cols_to_check[0].lower()):
+                cols_to_check = cols_to_check[1:]
+            if cols_to_check:
+                self.df_loaded.dropna(subset=cols_to_check, how='all', inplace=True)  # <--- Эта строка удаляет пустые
+                removed_count = initial_rows - len(self.df_loaded)
+                if removed_count > 0:
+                    signals.log.emit(f"Удалено {removed_count} пустых строк.", "INFO")
+            # --- КОНЕЦ УДАЛЕНИЯ ПУСТЫХ СТРОК ---
+
+            if self.df_loaded.empty:
+                signals.log.emit("Файл пуст после удаления пустых строк.", "WARNING")
+                return {'status': 'error', 'message': "Файл не содержит данных."}
+
         except FileNotFoundError:
             signals.log.emit(f"Файл не найден: {file_name}", "ERROR")
             return None
@@ -373,17 +636,49 @@ class AccreditationApp(QWidget):
         # 1. Очистка данных
         signals.log.emit("Очистка данных...", "INFO")
         df_cleaned = self.processor.clean_dataframe(self.df_loaded)
+        # print(df_cleaned)
+        # print(type(df_cleaned))
+        # --- ОТЛАДКА ---
+        if not isinstance(df_cleaned, pd.DataFrame):
+            signals.log.emit(f"КРИТИЧЕСКАЯ ОШИБКА: clean_dataframe вернул {type(df_cleaned)}", "ERROR")
+            return None  # Прерываем выполнение
+        signals.log.emit(f"Тип после clean_dataframe: {type(df_cleaned)}", "DEBUG")
+        # ---------------
         signals.progress.emit(30)
 
         # 2. Валидация обязательных полей
         signals.log.emit("Валидация обязательных полей...", "INFO")
         df_validated = self.processor.validate_data(df_cleaned)
+        # --- ОТЛАДКА ---
+        if not isinstance(df_validated, pd.DataFrame):
+            signals.log.emit(f"КРИТИЧЕСКАЯ ОШИБКА: validate_data вернул {type(df_validated)}", "ERROR")
+            return None  # Прерываем выполнение
+        signals.log.emit(f"Тип после validate_data: {type(df_validated)}", "DEBUG")
+        # ---------------
         signals.progress.emit(40)
+
+        # 2.5 Валидация дат
+        signals.log.emit("Валидация дат рождения...", "INFO")
+        # --- ОТЛАДКА ---
+        signals.log.emit(f"Тип ПЕРЕД validate_dates: {type(df_validated)}", "DEBUG")
+        # ---------------
+        date_errors = self.processor.validate_dates(df_validated, min_year=1950)  # Используем проверенный df_validated
+        for idx, error_msg in date_errors.items():
+            # Добавляем ошибку даты к существующим ошибкам валидации
+            current_errors = df_validated.loc[idx, 'Ошибки Валидации']
+            if pd.isna(current_errors):
+                df_validated.loc[idx, 'Ошибки Валидации'] = error_msg
+            else:
+                df_validated.loc[idx, 'Ошибки Валидации'] += f"; {error_msg}"
+        signals.progress.emit(45)
 
         # 3. Проверка на необычные имена/фамилии
         signals.log.emit("Поиск необычных имен/фамилий...", "INFO")
-        suspicious_indices = self.processor.detect_unusual_names(df_validated)
-        confirmed_indices = set(df_validated.index) # Изначально все подтверждены
+        # --- ОТЛАДКА ---
+        signals.log.emit(f"Тип ПЕРЕД detect_unusual_names: {type(df_validated)}", "DEBUG")
+        # ---------------
+        suspicious_indices = self.processor.detect_unusual_names(df_validated)  # Используем тот же df_validated
+        confirmed_indices = set(df_validated.index)
 
         # Сбрасываем предыдущие подтверждения
         self.user_confirmations.clear()
@@ -405,8 +700,7 @@ class AccreditationApp(QWidget):
                      signals.log.emit(f"Строка {idx+1} не подтверждена пользователем и будет пропущена.", "WARNING")
                      confirmed_indices.discard(idx) # Удаляем неподтвержденные
                      # Добавляем ошибку валидации
-                     df_validated.loc[idx, 'Validation_Errors'] = (df_validated.loc[idx, 'Validation_Errors'] or "") + "; НЕ ПОДТВЕРЖДЕНО ПОЛЬЗОВАТЕЛЕМ"
-
+                     df_validated.loc[idx, 'Ошибки Валидации'] = (df_validated.loc[idx, 'Ошибки Валидации'] or "") + "; НЕ ПОДТВЕРЖДЕНО ПОЛЬЗОВАТЕЛЕМ"
 
         df_to_process = df_validated[df_validated.index.isin(confirmed_indices) & df_validated['Validation_Errors'].isna()].copy()
         df_invalid = df_validated[~df_validated.index.isin(confirmed_indices) | df_validated['Validation_Errors'].notna()].copy()
@@ -464,7 +758,7 @@ class AccreditationApp(QWidget):
             elif status_db == 'ACTIVE':
                 report_key = 'ГПХ_Ранее_проверенные_активные' if is_gph else 'Подрядчики_Ранее_проверенные_активные'
                 status_check = "Активен"
-            elif status_db in ['EXPIRED', 'NOT_FOUND']:
+            elif status_db in ['EXPIRED', 'NOT_FOUND', 'CHECKING']:
                  report_key = 'ГПХ_На_проверку' if is_gph else 'Подрядчики_На_проверку'
                  status_check = "На проверку"
                  # Собираем данные для добавления в TD
@@ -484,7 +778,11 @@ class AccreditationApp(QWidget):
         # Объединяем результаты обработки с невалидными строками для отображения в таблице
         df_display = pd.concat([df_to_process, df_invalid], ignore_index=True).fillna('')
         # Убедимся, что все нужные колонки есть
-        all_cols = ['ID', 'Фамилия', 'Имя', 'Отчество', 'Дата рождения', 'Организация', 'Должность', 'Статус БД', 'Статус Проверки', 'Validation_Errors']
+        all_cols = [
+            'ID', 'Фамилия', 'Имя', 'Отчество', 'Дата рождения',
+            'Организация', 'Должность', 'Статус БД', 'Прим.',
+            'Начало аккр.', 'Конец аккр.'
+        ]
         for col in all_cols:
              if col not in df_display.columns:
                  df_display[col] = ''
@@ -495,137 +793,412 @@ class AccreditationApp(QWidget):
         signals.log.emit("Обработка файла завершена.", "INFO")
         return {'processed_df': df_display, 'reports': reports, 'to_td': df_for_td}
 
+    # ui.py (полная функция _task_search_people)
+
     def _task_search_people(self, signals):
         """Worker: Выполняет поиск в БД."""
         search_term = self.searchEdit.text().strip()
         if not search_term:
             signals.log.emit("Поисковый запрос пуст.", "WARNING")
-            return pd.DataFrame() # Возвращаем пустой DataFrame
+            # Возвращаем пустой DataFrame, чтобы очистить таблицу
+            return pd.DataFrame(
+                columns=[
+            'ID', 'Фамилия', 'Имя', 'Отчество', 'Дата рождения',
+            'Организация', 'Должность', 'Статус БД', 'Статус Проверки',
+            'Ошибки Валидации', 'Прим.',
+            'Начало аккр.', 'Конец аккр.'
+        ])
 
         signals.log.emit(f"Выполнение поиска по запросу: '{search_term}'...", "INFO")
-        results = self.db_manager.search_people(search_term)
-        if results is not None:
-             # Преобразуем список словарей в DataFrame
-             df_results = pd.DataFrame(results)
-             # Преобразуем статусы БД для отображения
-             now_tz = datetime.now(self.timezone)
-             def map_status(row):
-                 if row['black_list']: return "В черном списке"
-                 if row['end_accr'] and pd.to_datetime(row['end_accr']).tz_convert(self.timezone) > now_tz: return "Аккредитован"
-                 if row['status'] == 'в ожидании': return "В ожидании"
-                 if row['status'] == 'отведен': return "Отведен (статус)"
-                 if row['status'] == 'истек срок': return "Истек срок"
-                 return row['status'] # Возвращаем исходный, если не подходит
+        try:
+            results = self.db_manager.search_people(search_term)  # Вызываем обновленный метод
 
-             df_results['Статус БД'] = df_results.apply(map_status, axis=1)
-             # Выбираем нужные колонки и переименовываем для совместимости
-             df_results = df_results[['id', 'surname', 'name', 'middle_name', 'birth_date', 'organization', 'position', 'Статус БД']]
-             df_results.columns = ['ID', 'Фамилия', 'Имя', 'Отчество', 'Дата рождения', 'Организация', 'Должность', 'Статус БД']
-             return df_results
-        else:
-             signals.log.emit(f"Ошибка при поиске по запросу: '{search_term}'.", "ERROR")
-             return None # Возвращаем None при ошибке БД
+            if results is None:
+                signals.log.emit(f"Ошибка при поиске (БД вернула None) по запросу: '{search_term}'.", "ERROR")
+                return None
+            if not results:
+                signals.log.emit(f"По запросу '{search_term}' ничего не найдено.", "INFO")
+                # Возвращаем пустой DataFrame с НОВЫМ набором колонок
+                return pd.DataFrame(
+                    columns=[
+            'ID', 'Фамилия', 'Имя', 'Отчество', 'Дата рождения',
+            'Организация', 'Должность', 'Статус БД', 'Статус Проверки',
+            'Ошибки Валидации', 'Прим.',
+            'Начало аккр.', 'Конец аккр.'
+        ])
 
-    def _task_add_to_temporary_db(self, signals):
+            df_results = pd.DataFrame(results)
+            if df_results.empty:
+                signals.log.emit(f"По запросу '{search_term}' ничего не найдено (после DataFrame).", "INFO")
+                return pd.DataFrame(
+                    columns=[
+            'ID', 'Фамилия', 'Имя', 'Отчество', 'Дата рождения',
+            'Организация', 'Должность', 'Статус БД', 'Статус Проверки',
+            'Ошибки Валидации', 'Прим.',
+            'Начало аккр.', 'Конец аккр.'
+        ])
+
+            # --- Определение Статус БД ---
+            now_tz = datetime.now(self.timezone)
+
+            def map_status(row):
+                source = row.get('source')
+                if source == 'AccrTable':
+                    is_blacklisted = row.get('black_list', False)
+                    end_accr_val = row.get('end_accr')
+                    status_val = row.get('accr_status')  # Используем accr_status
+
+                    if status_val == 'в ожидании': return "В ожидании (Accr)"
+
+                    if is_blacklisted: return "В черном списке"
+                    end_accr_aware = pd.to_datetime(end_accr_val).tz_convert(self.timezone) if pd.notna(
+                        end_accr_val) else None
+                    if end_accr_aware and end_accr_aware > now_tz: return "Аккредитован"
+                    if pd.notna(status_val) and status_val:
+
+                        if status_val == 'отведен': return "Отведен (статус)"
+                        if status_val == 'истек срок': return "Истек срок"
+                        return str(status_val)
+                    if end_accr_aware and end_accr_aware <= now_tz: return "Истек срок (расчет)"
+                    return 'Неизвестно (Accr)'
+                elif source == 'TD':
+                    # Для записей из TD просто возвращаем их статус
+                    td_status = row.get('td_status', 'В TD (статус неизв.)')
+                    return f"В TD ({td_status})"  # Показываем, что запись временная
+                else:
+                    return 'Источник неизв.'
+
+            df_results['Статус БД'] = df_results.apply(map_status, axis=1)
+
+            # --- Выбор и переименование колонок ---
+            display_cols_map = {
+                'id': 'ID',  # Для AccrTable 'id', для TD будет None или temp_id
+                'surname': 'Фамилия',
+                'name': 'Имя',
+                'middle_name': 'Отчество',
+                'birth_date': 'Дата рождения',
+                'organization': 'Организация',
+                'position': 'Должность',
+                'Статус БД': 'Статус БД',
+                'has_notes': 'Прим.',     # <-- Карта для новой колонки
+                'start_accr': 'Начало аккр.',  # <-- Новая карта
+                'end_accr': 'Конец аккр.'
+            }
+            # Используем id из AccrTable, если источник TD, ID будет None
+            df_results['id'] = df_results.apply(lambda row: row['id'] if row['source'] == 'AccrTable' else None, axis=1)
+
+            cols_to_select = [db_col for db_col in display_cols_map.keys() if db_col in df_results.columns]
+            if not cols_to_select:
+                signals.log.emit("В результатах поиска нет ни одной из ожидаемых колонок.", "ERROR")
+                return pd.DataFrame(columns=display_cols_map.values())
+
+            df_display = df_results[cols_to_select].copy()
+            df_display.rename(columns=display_cols_map, inplace=True)
+
+            # --- Форматирование дат ---
+            date_format = '%d.%m.%Y'
+            datetime_format = '%d.%m.%Y %H:%M'
+            local_tz = self.timezone # Используем таймзону из __init__
+
+            def format_birth_date(dt):
+                if pd.notna(dt):
+                    try:
+                        return pd.to_datetime(dt).strftime(date_format)
+                    except:
+                        return str(dt)
+                return ''
+
+            def format_timestamp_date(dt_val, signals_obj, col_name_log): # Общая функция форматирования
+                if pd.notna(dt_val):
+                    try:
+                        dt_aware = pd.to_datetime(dt_val)
+                        if dt_aware.tzinfo is None or dt_aware.tzinfo.utcoffset(dt_aware) is None:
+                            dt_aware = dt_aware.tz_localize('UTC', ambiguous='NaT', nonexistent='NaT')
+                            if pd.isna(dt_aware): return str(dt_val)
+                        # Для 'Начало аккр.' и 'Конец аккр.' нужен только формат даты
+                        return dt_aware.tz_convert(local_tz).strftime(date_format)
+                    except Exception as e:
+                        signals_obj.log.emit(f"Ошибка форматирования '{col_name_log}': {e} для {dt_val}", "ERROR")
+                        return str(dt_val)
+                return ''
+
+            if 'Дата рождения' in df_display.columns:
+                 df_display['Дата рождения'] = df_display['Дата рождения'].apply(format_birth_date)
+            if 'Начало аккр.' in df_display.columns:
+                 df_display['Начало аккр.'] = df_display['Начало аккр.'].apply(lambda x: format_timestamp_date(x, signals, 'Начало аккр.'))
+                 print(df_display['Начало аккр.'])
+            if 'Конец аккр.' in df_display.columns:
+                 df_display['Конец аккр.'] = df_display['Конец аккр.'].apply(lambda x: format_timestamp_date(x, signals, 'Конец аккр.'))
+                 print(df_display['Конец аккр.'])
+
+
+            # Добавляем недостающие колонки (Статус Проверки, Ошибки Валидации - они не приходят из поиска)
+            if 'Статус Проверки' not in df_display.columns: df_display['Статус Проверки'] = ''
+            if 'Ошибки Валидации' not in df_display.columns: df_display['Ошибки Валидации'] = ''
+            if 'Прим.' not in df_display.columns: df_display['Прим.'] = False  # По умолчанию False, если не пришло
+
+            # Преобразуем bool в строку для колонки "Прим."
+            df_display['Прим.'] = df_display['Прим.'].apply(lambda x: '✓' if x else '')
+
+            # Упорядочиваем колонки
+            final_order = ['ID', 'Фамилия', 'Имя', 'Отчество', 'Дата рождения',
+                           'Организация', 'Должность', 'Статус БД', 'Статус Проверки',
+                           'Ошибки Валидации', 'Прим.', 'Начало аккр.', 'Конец аккр.']
+            # Убедимся, что все колонки из final_order есть в df_display
+            for col in final_order:
+                if col not in df_display.columns:
+                    df_display[col] = ''  # Добавляем пустую, если вдруг отсутствует
+
+            df_display = df_display[final_order]  # Применяем порядок
+
+            signals.log.emit(f"Поиск завершен. Найдено {len(df_display)} записей.", "INFO")
+            return df_display
+
+        except Exception as e:
+            # Логируем любую другую ошибку во время поиска/обработки
+            signals.log.emit(f"Ошибка при запуске поиска: '{e}'.", "ERROR")
+            self.logger.exception("Полная трассировка ошибки поиска:")  # Логируем traceback
+            return None  # Возвращаем None при ошибке
+
+
+    def _task_add_to_temporary_db(self, notes_to_add, signals):
         """Worker: Добавляет отфильтрованные данные в временную таблицу TD."""
+        # ... (код метода как в прошлой версии, использует notes_to_add) ...
+        # Проверим, что ключ "Примечания" используется правильно
         if self.df_to_add_td.empty:
             signals.log.emit("Нет данных для добавления в временную таблицу.", "WARNING")
             return 0
 
-        signals.log.emit(f"Добавление {len(self.df_to_add_td)} записей в TD...", "INFO")
+        signals.log.emit(f"Добавление {len(self.df_to_add_td)} записей в TD (с примечанием: '{notes_to_add[:50]}...')...", "INFO")
         added_count = 0
         total_count = len(self.df_to_add_td)
         for index, row_data in self.df_to_add_td.iterrows():
-             # Преобразуем Series в dict
              data_dict = row_data.to_dict()
-             # Добавляем статус проверки, если его нет
-             if 'status' not in data_dict:
-                  data_dict['status'] = 'На проверку'
+             data_dict['Примечания'] = notes_to_add # Добавляем примечание
 
+             # Передаем data_dict в add_to_td, он сам извлечет нужные поля
              result = self.db_manager.add_to_td(data_dict)
              if result:
                  added_count += 1
-             signals.progress.emit(int(100 * (index + 1) / total_count))
 
-        signals.progress.emit(100)
         if added_count == total_count:
             signals.log.emit(f"Успешно добавлено {added_count} записей в TD.", "INFO")
         else:
              signals.log.emit(f"Добавлено {added_count} из {total_count} записей в TD. Проверьте лог на наличие ошибок.", "WARNING")
         return added_count
 
+
+    def run_add_to_temporary_db(self):
+        # Читаем примечания из ЕДИНОГО поля notesEdit
+        notes = self.notesEdit.toPlainText().strip()
+        self.logMessage(f"Запуск добавления в БД с примечаниями: '{notes[:50]}...'", "DEBUG")
+        # Передаем примечания как аргумент в задачу
+        self.run_task_in_background(self._task_add_to_temporary_db, self.handle_add_td_result, notes)
+
+
     def _task_manage_blacklist(self, signals):
-        """Worker: Добавляет/удаляет выбранного сотрудника из черного списка."""
         selected_row_index = self.get_selected_row_index()
         if selected_row_index is None:
             return "Не выбрана строка для управления черным списком."
 
-        # Получаем ID и ФИО из ВЫБРАННОЙ строки таблицы UI
-        person_id_item = self.dataTable.item(selected_row_index, 0) # Колонка ID
-        surname_item = self.dataTable.item(selected_row_index, 1)
-        name_item = self.dataTable.item(selected_row_index, 2)
-        middlename_item = self.dataTable.item(selected_row_index, 3)
-
-
-        if not person_id_item or not person_id_item.text().isdigit():
-            # Пытаемся найти ID по ФИО + ДР, если в таблице нет ID (например, после загрузки файла)
-            dob_item = self.dataTable.item(selected_row_index, 4)
-            if surname_item and name_item and dob_item:
-                surname = surname_item.text()
-                name = name_item.text()
-                middle_name = middlename_item.text() if middlename_item else None
-                birth_date = self.processor.normalize_date(dob_item.text())
-                if birth_date:
-                    person_id = self.db_manager.find_person_in_accrtable(surname, name, middle_name, birth_date)
-                    if not person_id:
-                        return f"Не удалось найти сотрудника {surname} {name} в основной таблице AccrTable для изменения статуса ЧС."
-                else:
-                     return "Некорректная дата рождения в выбранной строке."
+        # Собираем все доступные данные из строки таблицы
+        person_data = {}
+        headers = [self.dataTable.horizontalHeaderItem(i).text() for i in range(self.dataTable.columnCount())]
+        for col_idx, header in enumerate(headers):
+            item = self.dataTable.item(selected_row_index, col_idx)
+            if item:
+                person_data[header] = item.text() # Сохраняем как текст
             else:
-                return "Недостаточно данных (ID или ФИО+ДР) в выбранной строке для управления черным списком."
-        else:
-             person_id = int(person_id_item.text())
-             surname = surname_item.text() if surname_item else "N/A"
-             name = name_item.text() if name_item else "N/A"
+                person_data[header] = None
+
+        # Преобразуем дату рождения в объект date, если она есть
+        if 'Дата рождения' in person_data and person_data['Дата рождения']:
+             try:
+                 # data_processing.normalizeDate может быть полезнее, если формат сложный
+                 # но для простоты здесь предполагается формат, который pd.to_datetime поймет
+                 date_obj = pd.to_datetime(person_data['Дата рождения'], dayfirst=True, errors='coerce').date()
+                 if pd.notna(date_obj):
+                      person_data['Дата рождения'] = date_obj
+                 else:
+                      signals.log.emit(f"Некорректная дата рождения в строке: {person_data['Дата рождения']}", "ERROR")
+                      return f"Некорректная дата рождения в строке: {person_data['Дата рождения']}"
+             except Exception:
+                  signals.log.emit(f"Ошибка парсинга даты рождения: {person_data['Дата рождения']}", "ERROR")
+                  return f"Ошибка парсинга даты рождения: {person_data['Дата рождения']}"
+        elif not person_data.get('Дата рождения'): # Если даты рождения нет, это проблема
+            signals.log.emit("Отсутствует дата рождения в выбранной строке.", "ERROR")
+            return "Отсутствует дата рождения в выбранной строке."
 
 
-        signals.log.emit(f"Запрос на изменение статуса ЧС для ID: {person_id} ({surname} {name})...", "INFO")
-        # Подтверждение от пользователя (в основном потоке) - пока убрано, можно добавить при необходимости
-        # if not self.showConfirmationDialog(f"Вы уверены, что хотите изменить статус ЧС для {surname} {name}?"):
-        #    return "Действие отменено пользователем."
+        fio = f"{person_data.get('Фамилия', '')} {person_data.get('Имя', '')}".strip()
+        signals.log.emit(f"Запрос на изменение статуса ЧС для: {fio} (данные строки: {person_data})...", "INFO")
 
-        result_action = self.db_manager.toggle_blacklist(person_id)
+        action_taken, message = self.db_manager.toggle_blacklist(person_data)
 
-        if result_action == "добавлен в черный список":
-            message = f"Сотрудник ID {person_id} ({surname} {name}) добавлен в черный список."
+        if action_taken:
+            signals.log.emit(f"Для {fio}: {message}", "INFO")
+            # Определяем новый отображаемый статус в UI
             new_status_display = "В черном списке"
-            return {'message': message, 'row_index': selected_row_index, 'new_status': new_status_display}
-        elif result_action == "убран из черного списка":
-            message = f"Сотрудник ID {person_id} ({surname} {name}) убран из черного списка."
-            new_status_display = "Снят с ЧС" # Отображаем, что снят
-            return {'message': message, 'row_index': selected_row_index, 'new_status': new_status_display}
+            if "убран" in action_taken:
+                 new_status_display = "На проверку (TD)" if "TD" in action_taken else "Снят с ЧС"
+            return {'message': message, 'row_index': selected_row_index, 'new_status': new_status_display, 'action': action_taken}
         else:
-             error_msg = f"Ошибка при изменении статуса ЧС для ID: {person_id} ({surname} {name})."
-             signals.log.emit(error_msg, "ERROR")
-             return error_msg # Возвращаем строку с ошибкой
+             signals.log.emit(f"Ошибка при изменении статуса ЧС для {fio}: {message}", "ERROR")
+             return message # Возвращаем строку с ошибкой
 
     def _task_save_notes(self, signals):
         """Worker: Сохраняет примечания для выбранного сотрудника."""
-        selected_row_index = self.get_selected_row_index()
-        if selected_row_index is None:
-            return "Не выбрана строка для сохранения примечаний."
+        # Получаем ID НЕ из сигнала, а из ТЕКУЩЕГО ВЫБОРА В ТАБЛИЦЕ
+        # Это безопаснее, если пользователь кликнул куда-то еще во время сохранения
+        selected_row_index = self.get_selected_row_index() # Используем метод для получения индекса
+        person_id = None
+        if selected_row_index is not None:
+             person_id_item = self.dataTable.item(selected_row_index, 0)
+             if person_id_item and person_id_item.text().isdigit():
+                  person_id = int(person_id_item.text())
 
-        person_id_item = self.dataTable.item(selected_row_index, 0) # Колонка ID
-        if not person_id_item or not person_id_item.text().isdigit():
-             return "Не найден ID сотрудника в выбранной строке."
+        if person_id is None:
+            # Логируем ошибку и возвращаем None или сообщение
+            error_msg = "Не удалось определить ID сотрудника для сохранения примечаний (строка не выбрана или нет ID)."
+            signals.log.emit(error_msg, "WARNING")
+            return error_msg # Возвращаем строку с ошибкой
 
-        person_id = int(person_id_item.text())
-        notes = self.notesEdit.toPlainText() # Получаем текст из QTextEdit
+        # Получаем текст из notesEdit (это безопасно делать в worker'е, т.к. он читает свойство)
+        notes = self.notesEdit.toPlainText()
 
         signals.log.emit(f"Сохранение примечаний для ID: {person_id}...", "INFO")
         success = self.db_manager.update_notes(person_id, notes)
 
-        return {'success': success, 'person_id': person_id}
+        if success:
+             return {'success': success, 'person_id': person_id}
+        else:
+             return f"Ошибка при сохранении примечаний для ID {person_id}."
+
+    # --- НОВАЯ ФОНОВАЯ ЗАДАЧА для файла активации ---
+    def _task_process_activation_file(self, signals):
+        """Worker: Обрабатывает файл активации."""
+        signals.log.emit("Запрос выбора файла активации...", "INFO")
+        file_name = self.file_manager.open_file_dialog()
+        if not file_name:
+            return {'status': 'cancelled', 'message': "Выбор файла активации отменен."}
+
+        signals.log.emit(f"Загрузка данных из файла активации: {os.path.basename(file_name)}...", "INFO")
+        try:
+            df_activation = pd.read_excel(file_name, engine='openpyxl')
+            signals.log.emit(f"Загружено {len(df_activation)} строк из файла активации.", "INFO")
+        except Exception as e:
+            error_msg = f"Ошибка чтения Excel файла активации: {e}"
+            signals.log.emit(error_msg, "ERROR")
+            return {'status': 'error', 'message': error_msg}
+
+        # 1. Очистка данных из файла активации
+        signals.log.emit("Очистка данных из файла активации...", "INFO")
+        df_cleaned = self.processor.clean_dataframe(df_activation)
+        # Здесь можно добавить валидацию дат и обязательных полей для файла активации, если нужно
+
+        activated_count = 0
+        added_td_count = 0
+        skipped_count = 0
+        error_count = 0
+        processed_count = 0
+        total_rows = len(df_cleaned)
+
+        # Сбрасываем предыдущие решения по новым сотрудникам
+        self.new_employee_actions.clear()
+
+        signals.log.emit("Начало обработки файла активации...", "INFO")
+        for index, row in df_cleaned.iterrows():
+            processed_count += 1
+            signals.progress.emit(int(100 * processed_count / total_rows))
+
+            # Извлекаем данные для поиска и возможного добавления
+            data_dict = row.to_dict()  # Сохраняем всю строку на всякий случай
+            surname = row.get('Фамилия')
+            name = row.get('Имя')
+            middle_name = row.get('Отчество')
+            birth_date = row.get('Дата рождения')
+
+            # Проверяем минимально необходимые данные
+            if not surname or not name or not birth_date:
+                signals.log.emit(f"Строка {index + 1}: Пропущена из-за отсутствия ФИО или Даты рождения.",
+                                 "WARNING")
+                skipped_count += 1
+                continue
+
+            # Пытаемся активировать существующего сотрудника 'в ожидании'
+            success, message, person_id = self.db_manager.activate_person_by_details(
+                surname, name, middle_name, birth_date
+            )
+
+            if success and "успешно активирован" in message:
+                activated_count += 1
+                signals.log.emit(f"Строка {index + 1} ({surname} {name}): {message}", "INFO")
+            elif success and "Активация не требуется" in message:
+                # Статус уже не 'в ожидании', просто пропускаем
+                signals.log.emit(f"Строка {index + 1} ({surname} {name}): {message}", "DEBUG")
+                # skipped_count += 1 # Не считаем это пропуском в смысле ошибки
+            elif not success and person_id is None:  # Сотрудник не найден
+                signals.log.emit(f"Строка {index + 1}: {message} Запрос действия у пользователя...", "WARNING")
+                # Запрашиваем действие у пользователя через сигнал
+                # Передаем data_dict, чтобы можно было добавить сотрудника
+                request_data = {
+                    'Фамилия': surname, 'Имя': name, 'Отчество': middle_name,
+                    'Дата рождения': birth_date,
+                    'Место рождения': row.get('Место рождения'),  # Передаем доп. поля
+                    'Регистрация': row.get('Адрес регистрации'),
+                    'Организация': row.get('Организация', 'Не указана'),  # Нужна организация
+                    'Должность': row.get('Должность', 'Не указана'),
+                    'Примечания': row.get('Примечания', '')  # И примечания, если есть в файле
+                }
+                signals.request_new_employee_action.emit(request_data, index)
+                # Ждем ответа пользователя
+                while index not in self.new_employee_actions:
+                    QThread.msleep(100)
+
+                action = self.new_employee_actions.get(index, 'skip')
+
+                if action == 'activate':
+                    # Добавляем как активный
+                    signals.log.emit(f"Строка {index + 1}: Пользователь выбрал 'Добавить как Активный'.", "INFO")
+                    new_person_id = self.db_manager.add_to_accrtable(request_data, status='аккредитован')
+                    if new_person_id:
+                        # Сразу обновляем mainTable для нового активного
+                        now_tz = datetime.now(self.timezone)
+                        end_accr = now_tz + timedelta(days=180)
+                        query_main = """
+                            INSERT INTO mainTable (person_id, start_accr, end_accr, black_list, last_checked)
+                            VALUES (%s, %s, %s, FALSE, %s);
+                         """
+                        self.db_manager.execute_query(query_main, (new_person_id, now_tz, end_accr, now_tz),
+                                                      commit=True)
+                        self.db_manager.log_transaction(new_person_id, 'Добавлен и Активирован (файл)')
+                        activated_count += 1
+                    else:
+                        signals.log.emit(f"Строка {index + 1}: Ошибка добавления нового активного сотрудника.",
+                                         "ERROR")
+                        error_count += 1
+                elif action == 'add_to_td':
+                    # Добавляем в TD
+                    signals.log.emit(f"Строка {index + 1}: Пользователь выбрал 'Добавить в TD'.", "INFO")
+                    td_id = self.db_manager.add_to_td(request_data)
+                    if td_id:
+                        added_td_count += 1
+                    else:
+                        signals.log.emit(f"Строка {index + 1}: Ошибка добавления нового сотрудника в TD.", "ERROR")
+                        error_count += 1
+                else:  # action == 'skip'
+                    signals.log.emit(f"Строка {index + 1}: Сотрудник пропущен по выбору пользователя.", "INFO")
+                    skipped_count += 1
+
+            else:  # Ошибка активации для существующего сотрудника
+                signals.log.emit(f"Строка {index + 1} ({surname} {name}): Ошибка активации - {message}", "ERROR")
+                error_count += 1
+
+        signals.progress.emit(100)
+        summary_message = f"Обработка файла активации завершена. Успешно активировано: {activated_count}, Добавлено в TD: {added_td_count}, Пропущено: {skipped_count}, Ошибок: {error_count}."
+        signals.log.emit(summary_message, "INFO")
+        return {'status': 'completed', 'message': summary_message, 'activated': activated_count,
+                'added_td': added_td_count, 'skipped': skipped_count, 'errors': error_count}
 
     # --- Методы для запуска фоновых задач ---
 
@@ -651,14 +1224,113 @@ class AccreditationApp(QWidget):
     def run_search_people(self):
          self.run_task_in_background(self._task_search_people, self.handle_search_result)
 
-    def run_add_to_temporary_db(self):
-        self.run_task_in_background(self._task_add_to_temporary_db, self.handle_add_td_result)
-
     def run_manage_blacklist(self):
          self.run_task_in_background(self._task_manage_blacklist, self.handle_manage_blacklist_result)
 
     def run_save_notes(self):
-         self.run_task_in_background(self._task_save_notes, self.handle_save_notes_result)
+        selected_row_index = self.get_selected_row_index()
+        notes_text = self.notesEdit.toPlainText().strip()
+
+        if selected_row_index is not None:
+            # --- Случай 1: Строка выбрана ---
+            person_id = None
+            person_id_item = self.dataTable.item(selected_row_index, 0)
+            if person_id_item and person_id_item.text().isdigit():
+                person_id = int(person_id_item.text())
+
+            if person_id is None:
+                QMessageBox.warning(self, "Ошибка", "Не найден ID сотрудника в выбранной строке для сохранения примечания.")
+                return
+
+            self.logMessage(f"Запуск сохранения примечания для ID: {person_id}", "DEBUG")
+            # Запускаем задачу для одного ID
+            self.run_task_in_background(self._task_save_notes_for_one, self.handle_save_notes_result, person_id, notes_text)
+
+        else:
+            # --- Случай 2: Строка НЕ выбрана ---
+            if not notes_text:
+                 QMessageBox.information(self, "Информация", "Поле примечаний пусто. Нечего сохранять.")
+                 return
+
+            # Получаем ID всех видимых строк с валидным ID AccrTable
+            visible_ids = []
+            for row in range(self.dataTable.rowCount()):
+                 # Проверяем, видима ли строка (если используется фильтрация/скрытие - пока нет)
+                 # if not self.dataTable.isRowHidden(row): # Раскомментировать, если будет фильтрация
+                 id_item = self.dataTable.item(row, 0) # Колонка ID
+                 if id_item and id_item.text().isdigit():
+                     visible_ids.append(int(id_item.text()))
+
+            if not visible_ids:
+                 QMessageBox.warning(self, "Нет данных", "В таблице нет сотрудников с ID из основной базы данных, для которых можно было бы сохранить примечание.")
+                 return
+
+            # Запрашиваем подтверждение
+            reply = QMessageBox.question(self, 'Подтверждение',
+                                         f"Нет выбранной строки.\nСохранить введенное примечание для ВСЕХ {len(visible_ids)} видимых сотрудников в таблице (у кого есть ID)?",
+                                         QMessageBox.Yes | QMessageBox.Cancel, QMessageBox.Cancel)
+
+            if reply == QMessageBox.Yes:
+                 self.logMessage(f"Запуск массового сохранения примечания для {len(visible_ids)} ID...", "DEBUG")
+                 # Запускаем задачу для списка ID
+                 self.run_task_in_background(self._task_save_notes_for_many, self.handle_save_notes_mass_result, visible_ids, notes_text)
+            else:
+                 self.logMessage("Массовое сохранение примечаний отменено.", "INFO")
+
+    # --- Старая фоновая задача (теперь для одного) ---
+    def _task_save_notes_for_one(self, person_id, notes, signals):
+        """Worker: Сохраняет примечания для ОДНОГО выбранного сотрудника."""
+        signals.log.emit(f"Сохранение примечаний для ID: {person_id}...", "INFO")
+        success = self.db_manager.update_notes(person_id, notes)
+        message = "Примечания успешно сохранены." if success else "Ошибка при сохранении примечаний."
+        return {'success': success, 'person_id': person_id, 'message': message}
+
+        # --- НОВАЯ фоновая задача (для многих) ---
+
+    def _task_save_notes_for_many(self, person_ids, notes, signals):
+        """Worker: Сохраняет ОДНО примечание для СПИСКА сотрудников."""
+        if not person_ids:
+            return {'success': False, 'count': 0, 'message': "Список ID пуст."}
+
+        signals.log.emit(f"Массовое сохранение примечания '{notes[:30]}...' для {len(person_ids)} ID...", "INFO")
+        success_count = 0
+        total_count = len(person_ids)
+        errors = []
+
+        for i, person_id in enumerate(person_ids):
+            try:
+                success = self.db_manager.update_notes(person_id, notes)
+                if success:
+                    success_count += 1
+                else:
+                    errors.append(f"ID {person_id}: Не удалось сохранить")
+            except Exception as e:
+                errors.append(f"ID {person_id}: Ошибка - {e}")
+            signals.progress.emit(int(100 * (i + 1) / total_count))
+
+        signals.progress.emit(100)
+        message = f"Массовое сохранение завершено. Успешно: {success_count}/{total_count}."
+        if errors:
+            message += f"\nОшибки:\n" + "\n".join(errors[:5])  # Показываем первые 5 ошибок
+        return {'success': success_count == total_count, 'count': success_count, 'total': total_count,
+                'message': message}
+
+    def handle_save_notes_mass_result(self, result):
+        """Обработка результата МАССОВОГО сохранения примечаний."""
+        success = result.get('success')
+        count = result.get('count', 0)
+        total = result.get('total', 0)
+        message = result.get('message', 'Неизвестный результат.')
+
+        self.logMessage(message, "INFO" if success else "WARNING")
+        if success:
+            QMessageBox.information(self, "Успешно", message)
+            # Обновляем индикаторы для всех обработанных строк?
+            # Это может быть медленно, возможно, проще перезагрузить поиск
+            self.refresh_current_view()  # Метод для обновления таблицы
+        else:
+            QMessageBox.warning(self, "Завершено с ошибками", message)
+        self.task_finished_signal.emit("Сохранение примечаний (массовое)")
 
     # --- Вспомогательные методы GUI ---
 
@@ -686,7 +1358,8 @@ class AccreditationApp(QWidget):
 
         # Определение порядка колонок для отображения
         display_columns = ['ID', 'Фамилия', 'Имя', 'Отчество', 'Дата рождения',
-                           'Организация', 'Должность', 'Статус БД', 'Статус Проверки', 'Validation_Errors']
+                           'Организация', 'Должность', 'Статус БД', 'Статус Проверки',
+                           'Ошибки Валидации', 'Прим.', 'Начало аккр.', 'Конец аккр.']
 
         status_colors = {
             "Ранее отведен": QColor("salmon"),
@@ -702,15 +1375,32 @@ class AccreditationApp(QWidget):
 
         for row_idx, (index, row_data) in enumerate(df_display.iterrows()):
             for col_idx, col_name in enumerate(display_columns):
+                value = row_data.get(col_name)  # Используем get для безопасности
                 if col_name in row_data:
                      value = row_data[col_name]
-                     # Форматирование даты
-                     if col_name == 'Дата рождения' and isinstance(value, (date, datetime)):
-                         display_value = value.strftime('%d.%m.%Y')
-                     elif pd.isna(value):
-                          display_value = ""
+                     # --- Преобразование перед отображением ---
+                     if pd.isna(value):
+                         display_value = ""
+                     elif col_name == 'ID' and not isinstance(value,
+                                                              (int, float)):  # Если ID не число (напр. "N/A (TD)")
+                         display_value = str(value)
+                     elif col_name == 'ID':  # ID числовой
+                         display_value = str(int(value))  # Преобразуем float ID (если вдруг) в int строку
+                     elif col_name in ['Дата рождения', 'Начало аккр.', 'Конец аккр.']:
+                         # Даты уже должны быть строками после _task_search_people
+                         # Но на всякий случай проверим
+                         if isinstance(value, (date, datetime)):
+                             try:
+                                 if col_name == 'Дата рождения' or col_name == 'Конец аккр.':
+                                     display_value = value.strftime('%d.%m.%Y')
+                                 else:  # Дата добавл.
+                                     display_value = value.strftime('%d.%m.%Y %H:%M')
+                             except:
+                                 display_value = str(value)  # Если ошибка форматирования
+                         else:
+                             display_value = str(value)  # Если пришло не датой
                      else:
-                          display_value = str(value)
+                         display_value = str(value)
 
                      item = QTableWidgetItem(display_value)
 
@@ -738,12 +1428,18 @@ class AccreditationApp(QWidget):
                           if cell_color.lightness() > 180:
                                item.setForeground(QBrush(QColor("black")))
 
+                        # Выравнивание по центру для колонки "Прим."
+                     if col_name == 'Прим.':
+                        item.setTextAlignment(Qt.AlignCenter)
+
 
                      self.dataTable.setItem(row_idx, col_idx, item)
                 else:
                     self.dataTable.setItem(row_idx, col_idx, QTableWidgetItem("")) # Пустая ячейка, если колонки нет
 
-        # self.dataTable.resizeColumnsToContents() # Подгонка ширины колонок - может быть медленно
+        self.update_column_visibility(df_display) # <--- Вызов метода
+        self.dataTable.resizeColumnsToContents() # Подгонка ширины колонок - может быть медленно
+
         self.logMessage("Таблица обновлена.", "DEBUG")
         # Очищаем поле примечаний при обновлении таблицы
         self.notesEdit.clear()
@@ -759,39 +1455,47 @@ class AccreditationApp(QWidget):
         self.logMessage("Запрос на сохранение сгенерированных отчетов...", "INFO")
         self.file_manager.save_reports(self.current_reports)
 
+        # --- Метод on_table_selection_changed теперь только загружает и управляет кнопкой "Сохранить (выбранному)" ---
     def on_table_selection_changed(self):
-        """Загружает примечания при выборе строки в таблице."""
-        selected_row_index = self.get_selected_row_index()
-        if selected_row_index is not None:
-            person_id_item = self.dataTable.item(selected_row_index, 0) # Колонка ID
+        selected_rows = self.dataTable.selectionModel().selectedRows()
+        person_id = None
+        can_save_to_selected_accr = False
+
+        if selected_rows:
+            selected_row_index = selected_rows[0].row()
+            person_id_item = self.dataTable.item(selected_row_index, 0)
+
             if person_id_item and person_id_item.text().isdigit():
                 person_id = int(person_id_item.text())
-                self.logMessage(f"Загрузка примечаний для ID: {person_id}", "DEBUG")
-                # Запускаем загрузку в фоне, чтобы не блокировать UI, если БД медленная
-                worker = Worker(self.db_manager.get_notes, person_id)
-                worker.signals.finished.connect(self.update_notes_signal.emit) # Обновляем UI по завершении
-                worker.signals.error.connect(lambda e: self.logMessage(f"Ошибка загрузки примечаний: {e}", "ERROR"))
-                self.thread_pool.start(worker)
-                # Активируем поле и кнопку сохранения
-                self.notesEdit.setReadOnly(False)
-                self.btnSaveNotes.setEnabled(True)
-            else:
-                # Если нет ID, показываем сообщение
-                self.notesEdit.setPlaceholderText("Не найден ID сотрудника в этой строке. Нельзя загрузить или сохранить примечания.")
+                can_save_to_selected_accr = True
+                self.logMessage(f"Выбрана строка с ID: {person_id}. Загрузка примечаний...", "DEBUG")
+                self.notesEdit.setPlaceholderText("Загрузка примечаний...")
                 self.notesEdit.clear()
                 self.notesEdit.setReadOnly(True)
-                self.btnSaveNotes.setEnabled(False)
+                worker = Worker(self.db_manager.get_notes, person_id)
+                worker.signals.finished.connect(self.update_notes_signal.emit)  # Используем общий сигнал
+                worker.signals.error.connect(lambda e: self.logMessage(f"Ошибка загрузки примечаний: {e}", "ERROR"))
+                self.thread_pool.start(worker)
+            else:
+                self.notesEdit.setPlaceholderText(
+                    "Нет ID в БД. Примечания не загружены. Можно ввести общие примечания.")
+                self.notesEdit.clear()
+                self.notesEdit.setReadOnly(False)
         else:
-            # Если ничего не выбрано
-            self.notesEdit.setPlaceholderText("Выберите запись в таблице для просмотра или редактирования примечаний...")
+            self.notesEdit.setPlaceholderText("Примечания к выбранной записи ИЛИ введите сюда общие примечания...")
             self.notesEdit.clear()
-            self.notesEdit.setReadOnly(True)
-            self.btnSaveNotes.setEnabled(False)
+            self.notesEdit.setReadOnly(False)
+
+        self.btnSaveNotes.setEnabled(can_save_to_selected_accr)  # Управляем только кнопкой для выбранного
+
+        # --- Метод displayNotes теперь только отображает текст ---
 
     def displayNotes(self, notes_text):
-         """Отображает текст примечаний в QTextEdit (вызывается из основного потока)."""
-         self.notesEdit.setPlainText(notes_text if notes_text else "")
-
+        """Отображает текст примечаний И делает поле доступным для редактирования."""
+        self.notesEdit.setPlainText(notes_text if notes_text is not None else "")  # Обработка None
+        self.notesEdit.setReadOnly(False)
+        self.notesEdit.setPlaceholderText("Редактируйте примечания здесь...")
+        # Кнопка "Сохранить (выбранному)" уже управляется из on_table_selection_changed
 
     @pyqtSlot(str, int)
     def handle_confirmation_request(self, message, row_index):
@@ -815,6 +1519,108 @@ class AccreditationApp(QWidget):
         # self.progress_dialog.setValue(value)
         # if value == 100:
         #      self.progress_dialog.reset()
+
+        # --- Слоты для обработки активации ---
+    def handle_set_active_result(self, result):
+        success = result.get('success', False)
+        message = result.get('message', 'Неизвестная ошибка.')
+        row_index = result.get('row_index')
+        person_id = result.get('person_id')
+
+        if success:
+            self.logMessage(message, "INFO")
+            # Обновляем статус в таблице UI
+            if row_index is not None:
+                status_item = QTableWidgetItem("Аккредитован")
+                status_item.setBackground(QBrush(QColor("lightgreen")))
+                status_item.setForeground(QBrush(QColor("black")))
+                self.dataTable.setItem(row_index, 7, status_item)  # Колонка 'Статус БД'
+                self.dataTable.setItem(row_index, 8, QTableWidgetItem("Аккредитован"))  # Колонка 'Статус Проверки'
+        else:
+            self.logMessage(f"Ошибка активации для ID {person_id}: {message}", "ERROR")
+            QMessageBox.warning(self, "Ошибка активации", message)
+
+        self.task_finished_signal.emit("Установка статуса 'Активен'")
+
+    # --- Метод, выполняемый в фоне для активации ---
+    def _task_set_active_status(self, person_id, row_index, signals):
+        """Worker: Устанавливает статус 'аккредитован' для сотрудника."""
+        if not person_id:
+            return {'success': False, 'message': "Не удалось получить ID сотрудника.", 'row_index': row_index,
+                    'person_id': person_id}
+
+        signals.log.emit(f"Запрос на установку статуса 'Активен' для ID: {person_id}...", "INFO")
+        success, message = self.db_manager.set_status_active(person_id)
+        return {'success': success, 'message': message, 'row_index': row_index, 'person_id': person_id}
+
+    # --- НОВЫЙ МЕТОД для запуска обработки файла активации ---
+    def run_process_activation_file(self):
+        self.logMessage("Запуск обработки файла активации...", "INFO")
+        # Обработчик результата может быть более детальным
+        self.run_task_in_background(self._task_process_activation_file, self.handle_activation_result)
+
+        # --- НОВЫЙ ОБРАБОТЧИК для результатов активации ---
+
+    def handle_activation_result(self, result):
+        status = result.get('status', 'error')
+        message = result.get('message', 'Неизвестный результат обработки файла активации.')
+
+        if status == 'completed':
+            self.logMessage(message, "INFO")
+            QMessageBox.information(self, "Обработка завершена", message)
+            # Опционально: Обновить таблицу после активации?
+            # self.run_search_people() # Можно выполнить поиск по какому-то критерию или общий
+        elif status == 'cancelled':
+            self.logMessage(message, "INFO")
+        else:  # status == 'error'
+            self.logMessage(message, "ERROR")
+            QMessageBox.critical(self, "Ошибка обработки файла", message)
+
+        self.task_finished_signal.emit("Обработка файла активации")
+
+    # --- Слоты для обработки истории ---
+    def handle_show_history_result(self, result):
+        if isinstance(result, list):
+            if result:
+                # Создаем и показываем диалог
+                history_dialog = HistoryDialog(result, self)
+                history_dialog.exec_()  # Показываем модально
+            else:
+                self.logMessage("История операций для выбранного сотрудника пуста.", "INFO")
+                QMessageBox.information(self, "История операций",
+                                        "История операций для выбранного сотрудника пуста.")
+        elif isinstance(result, str):  # Сообщение об ошибке
+            self.logMessage(result, "WARNING")
+            QMessageBox.warning(self, "Ошибка", result)
+        self.task_finished_signal.emit("Просмотр истории")
+
+    # --- Метод, выполняемый в фоне для истории ---
+    def _task_show_history(self, person_id, signals):
+        """Worker: Получает историю операций для сотрудника."""
+        if not person_id:
+            return "Не удалось получить ID сотрудника."  # Возвращаем строку с ошибкой
+        signals.log.emit(f"Запрос истории для ID: {person_id}...", "INFO")
+        history_records = self.db_manager.get_employee_records(person_id)
+        # history_records будет списком словарей или None в случае ошибки
+        if history_records is None:
+            return f"Ошибка при получении истории для ID: {person_id}."
+        return history_records  # Возвращаем список
+
+    # --- Метод для запуска просмотра истории ---
+    def run_show_history(self):
+        selected_row_index = self.get_selected_row_index()
+        person_id = None
+        if selected_row_index is not None:
+            person_id_item = self.dataTable.item(selected_row_index, 0)  # Колонка ID
+            if person_id_item and person_id_item.text().isdigit():
+                person_id = int(person_id_item.text())
+
+        if person_id is None:
+            QMessageBox.warning(self, "Ошибка", "Выберите строку с сотрудником (с ID), чтобы посмотреть историю.")
+            return
+
+        self.logMessage(f"Запуск получения истории для ID: {person_id}", "DEBUG")
+        self.run_task_in_background(self._task_show_history, self.handle_show_history_result, person_id)
 
 
     def closeEvent(self, event):
