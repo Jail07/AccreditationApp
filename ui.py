@@ -178,7 +178,6 @@ class AccreditationApp(QWidget):
         self.current_reports = {} # Словарь для сгенерированных отчетов
         self.thread_pool = QThreadPool() # Пул потоков для задач
         self.logger.info(f"Максимальное количество потоков: {self.thread_pool.maxThreadCount()}")
-
         self.initUI()
         self.connect_signals()
 
@@ -303,7 +302,7 @@ class AccreditationApp(QWidget):
         self.dataTable.itemSelectionChanged.connect(self.on_table_selection_changed) # Загрузка примечаний при выборе
         self.dataTable.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeToContents) # ID
         self.dataTable.horizontalHeader().setSectionResizeMode(10, QHeaderView.ResizeToContents)  # Прим.
-        self.dataTable.horizontalHeader().setSectionResizeMode(11, QHeaderView.ResizeToContents)  # Дата добавл.
+        self.dataTable.horizontalHeader().setSectionResizeMode(11, QHeaderView.ResizeToContents)  # Начало аккр.
         self.dataTable.horizontalHeader().setSectionResizeMode(12, QHeaderView.ResizeToContents)  # Конец аккр.
         right_layout.addWidget(self.dataTable)
 
@@ -338,39 +337,7 @@ class AccreditationApp(QWidget):
         main_layout.addWidget(splitter)
         self.setLayout(main_layout)
 
-        # Применение темной темы
-        # self.apply_dark_theme()
-
         self.resize(1200, 800) # Установка размера окна
-
-    # def apply_dark_theme(self):
-    #     """Применяет темную тему Fusion."""
-    #     QApplication.setStyle(QStyleFactory.create('Fusion'))
-    #     dark_palette = QPalette()
-    #     dark_color = QColor(45, 45, 45)
-    #     disabled_color = QColor(127, 127, 127)
-    #     text_color = Qt.white
-    #     highlight_color = QColor(42, 130, 218)
-    #
-    #     dark_palette.setColor(QPalette.Window, dark_color)
-    #     dark_palette.setColor(QPalette.WindowText, text_color)
-    #     dark_palette.setColor(QPalette.Base, QColor(35, 35, 35))
-    #     dark_palette.setColor(QPalette.AlternateBase, dark_color)
-    #     dark_palette.setColor(QPalette.ToolTipBase, text_color)
-    #     dark_palette.setColor(QPalette.ToolTipText, text_color)
-    #     dark_palette.setColor(QPalette.Text, text_color)
-    #     dark_palette.setColor(QPalette.Disabled, QPalette.Text, disabled_color)
-    #     dark_palette.setColor(QPalette.Button, dark_color)
-    #     dark_palette.setColor(QPalette.ButtonText, text_color)
-    #     dark_palette.setColor(QPalette.Disabled, QPalette.ButtonText, disabled_color)
-    #     dark_palette.setColor(QPalette.BrightText, Qt.red)
-    #     dark_palette.setColor(QPalette.Link, highlight_color)
-    #     dark_palette.setColor(QPalette.Highlight, highlight_color)
-    #     dark_palette.setColor(QPalette.HighlightedText, Qt.black)
-    #     dark_palette.setColor(QPalette.Disabled, QPalette.HighlightedText, disabled_color)
-    #
-    #     QApplication.setPalette(dark_palette)
-    #     self.setStyleSheet("QWidget { color: white; } QToolTip { color: #ffffff; background-color: #2a82da; border: 1px solid white; }")
 
     # --- Слоты для обработки результатов фоновых задач ---
 
@@ -665,11 +632,11 @@ class AccreditationApp(QWidget):
         date_errors = self.processor.validate_dates(df_validated, min_year=1950)  # Используем проверенный df_validated
         for idx, error_msg in date_errors.items():
             # Добавляем ошибку даты к существующим ошибкам валидации
-            current_errors = df_validated.loc[idx, 'Ошибки Валидации']
+            current_errors = df_validated.loc[idx, 'Validation_Errors']
             if pd.isna(current_errors):
-                df_validated.loc[idx, 'Ошибки Валидации'] = error_msg
+                df_validated.loc[idx, 'Validation_Errors'] = error_msg
             else:
-                df_validated.loc[idx, 'Ошибки Валидации'] += f"; {error_msg}"
+                df_validated.loc[idx, 'Validation_Errors'] += f"; {error_msg}"
         signals.progress.emit(45)
 
         # 3. Проверка на необычные имена/фамилии
@@ -700,7 +667,7 @@ class AccreditationApp(QWidget):
                      signals.log.emit(f"Строка {idx+1} не подтверждена пользователем и будет пропущена.", "WARNING")
                      confirmed_indices.discard(idx) # Удаляем неподтвержденные
                      # Добавляем ошибку валидации
-                     df_validated.loc[idx, 'Ошибки Валидации'] = (df_validated.loc[idx, 'Ошибки Валидации'] or "") + "; НЕ ПОДТВЕРЖДЕНО ПОЛЬЗОВАТЕЛЕМ"
+                     df_validated.loc[idx, 'Validation_Errors'] = (df_validated.loc[idx, 'Validation_Errors'] or "") + "; НЕ ПОДТВЕРЖДЕНО ПОЛЬЗОВАТЕЛЕМ"
 
         df_to_process = df_validated[df_validated.index.isin(confirmed_indices) & df_validated['Validation_Errors'].isna()].copy()
         df_invalid = df_validated[~df_validated.index.isin(confirmed_indices) | df_validated['Validation_Errors'].notna()].copy()
@@ -780,7 +747,8 @@ class AccreditationApp(QWidget):
         # Убедимся, что все нужные колонки есть
         all_cols = [
             'ID', 'Фамилия', 'Имя', 'Отчество', 'Дата рождения',
-            'Организация', 'Должность', 'Статус БД', 'Прим.',
+            'Организация', 'Должность', 'Статус БД', 'Статус Проверки',
+            'Ошибки Валидации', 'Прим.',
             'Начало аккр.', 'Конец аккр.'
         ]
         for col in all_cols:
@@ -929,7 +897,6 @@ class AccreditationApp(QWidget):
                  print(df_display['Начало аккр.'])
             if 'Конец аккр.' in df_display.columns:
                  df_display['Конец аккр.'] = df_display['Конец аккр.'].apply(lambda x: format_timestamp_date(x, signals, 'Конец аккр.'))
-                 print(df_display['Конец аккр.'])
 
 
             # Добавляем недостающие колонки (Статус Проверки, Ошибки Валидации - они не приходят из поиска)
@@ -1129,8 +1096,12 @@ class AccreditationApp(QWidget):
             success, message, person_id = self.db_manager.activate_person_by_details(
                 surname, name, middle_name, birth_date
             )
+            signals.log.emit(f"Строка {index + 1}: {success} {message} {person_id} {surname} {name}...",
+                             "WARNING")
+
 
             if success and "успешно активирован" in message:
+
                 activated_count += 1
                 signals.log.emit(f"Строка {index + 1} ({surname} {name}): {message}", "INFO")
             elif success and "Активация не требуется" in message:
@@ -1150,11 +1121,12 @@ class AccreditationApp(QWidget):
                     'Должность': row.get('Должность', 'Не указана'),
                     'Примечания': row.get('Примечания', '')  # И примечания, если есть в файле
                 }
+                print(1)
                 signals.request_new_employee_action.emit(request_data, index)
                 # Ждем ответа пользователя
                 while index not in self.new_employee_actions:
                     QThread.msleep(100)
-
+                print(2)
                 action = self.new_employee_actions.get(index, 'skip')
 
                 if action == 'activate':
@@ -1214,6 +1186,7 @@ class AccreditationApp(QWidget):
         worker.signals.progress.connect(self.update_progress) # Подключаем прогресс
         worker.signals.log.connect(self.logMessage) # Подключаем логирование из потока
         worker.signals.request_confirmation.connect(self.handle_confirmation_request) # Подключаем запрос подтверждения
+        worker.signals.request_new_employee_action.connect(self.handle_new_employee_action_request)
 
         # Добавляем задачу в пул потоков
         self.thread_pool.start(worker)
@@ -1393,7 +1366,7 @@ class AccreditationApp(QWidget):
                              try:
                                  if col_name == 'Дата рождения' or col_name == 'Конец аккр.':
                                      display_value = value.strftime('%d.%m.%Y')
-                                 else:  # Дата добавл.
+                                 else:  # Начало аккр.
                                      display_value = value.strftime('%d.%m.%Y %H:%M')
                              except:
                                  display_value = str(value)  # Если ошибка форматирования

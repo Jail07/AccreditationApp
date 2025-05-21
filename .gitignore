@@ -5,7 +5,6 @@ AccrApp.spec
 /get-docker.sh
 /icon.ico
 /icon.png
-/main.spec
 /deploy.sh
 /Test
 /dist

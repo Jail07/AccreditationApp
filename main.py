@@ -9,7 +9,7 @@ from PyQt5.QtWidgets import QApplication, QMessageBox
 from PyQt5.QtGui import QIcon
 
 # Первым делом настраиваем конфиг и логирование
-from config import get_db_config, get_logger, load_legacy_config, save_legacy_config
+from config import get_db_config, get_logger
 logger = get_logger('main') # Получаем главный логгер
 
 from ui import AccreditationApp

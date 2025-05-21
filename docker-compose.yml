@@ -1,4 +1,4 @@
-version: '3.8'
+version:
 
 services:
   db:
@@ -6,13 +6,31 @@ services:
       context: .
     container_name: accr_db
     ports:
-      - "5432:5432"
+      - "${DB_PORT_HOST:-5432}:5432"
     volumes:
       - postgres_data:/var/lib/postgresql/data
     environment:
-      POSTGRES_USER: postgres
-      POSTGRES_PASSWORD: 1234
-      POSTGRES_DB: accr_db
+      POSTGRES_DB: ${DB_NAME}
+      POSTGRES_USER: ${DB_USER}
+      POSTGRES_PASSWORD: ${DB_PASSWORD}
+
+  scheduler:
+    build: .
+    command: [ "python", "scheduler_runner.py" ]
+    working_dir: /app
+    depends_on:
+      - postgres_db
+    restart: always
+    environment:
+      DB_NAME: ${DB_NAME}
+      DB_USER: ${DB_USER}
+      DB_PASSWORD: ${DB_PASSWORD}
+      DB_HOST: postgres_db
+      DB_PORT: ${DB_PORT:-5432}
+    volumes:
+      - .:/app
+      - ./scheduler_output:/app/scheduler_output
+
 
 volumes:
   postgres_data:

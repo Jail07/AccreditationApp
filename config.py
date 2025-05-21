@@ -61,36 +61,3 @@ def get_db_config():
 
     logger.info(f"Конфигурация БД загружена: host={config['host']}, port={config['port']}, dbname={config['database']}, user={config['user']}")
     return config
-
-# --- Необязательно: Функции для старого config.txt ---
-# Оставлено для совместимости, если переход будет постепенным,
-# но рекомендуется полностью перейти на .env
-CONFIG_PATH = "./config.txt"
-legacy_logger = get_logger('legacy_config')
-
-def load_legacy_config():
-    """Загружает host:port из config.txt (устаревший метод)."""
-    if os.path.exists(CONFIG_PATH):
-        try:
-            with open(CONFIG_PATH, 'r') as file:
-                content = file.read().strip()
-                if ':' in content:
-                    host, port_str = content.split(':', 1)
-                    try:
-                        port = int(port_str)
-                        return host, port
-                    except ValueError:
-                        legacy_logger.error(f"Неверный формат порта в {CONFIG_PATH}: {port_str}")
-                else:
-                    legacy_logger.error(f"Неверный формат в {CONFIG_PATH}. Ожидалось 'host:port'.")
-        except Exception as e:
-            legacy_logger.error(f"Ошибка чтения {CONFIG_PATH}: {e}")
-    return None, None # Возвращаем None, если файла нет или ошибка
-
-def save_legacy_config(ip, port):
-     """Сохраняет host:port в config.txt (устаревший метод)."""
-     try:
-        with open(CONFIG_PATH, 'w') as file:
-            file.write(f"{ip}:{port}")
-     except Exception as e:
-         legacy_logger.error(f"Ошибка записи в {CONFIG_PATH}: {e}")
