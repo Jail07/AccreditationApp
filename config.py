@@ -61,3 +61,31 @@ def get_db_config():
 
     logger.info(f"Конфигурация БД загружена: host={config['host']}, port={config['port']}, dbname={config['database']}, user={config['user']}")
     return config
+
+def get_schedule_config(job_name_prefix, default_hour, default_minute, default_day_of_week=None):
+    """
+    Загружает настройки cron (час, минута, день недели) для задачи из .env.
+    job_name_prefix: например, 'EXPIRY', 'RECHECK', 'WEEKLY_TD'
+    """
+    logger = get_logger(__name__)
+    try:
+        hour = int(os.getenv(f'SCHED_{job_name_prefix}_HOUR', default_hour))
+        minute = int(os.getenv(f'SCHED_{job_name_prefix}_MINUTE', default_minute))
+        day_of_week_env = os.getenv(f'SCHED_{job_name_prefix}_DAY_OF_WEEK')
+
+        # Если default_day_of_week не None, значит это еженедельная задача
+        if default_day_of_week is not None:
+            day_of_week = day_of_week_env if day_of_week_env else default_day_of_week
+            logger.info(f"Расписание для {job_name_prefix}: day_of_week={day_of_week}, hour={hour}, minute={minute}")
+            return {'day_of_week': day_of_week, 'hour': hour, 'minute': minute}
+        else:  # Ежедневная задача
+            logger.info(f"Расписание для {job_name_prefix}: hour={hour}, minute={minute}")
+            return {'hour': hour, 'minute': minute}
+
+    except ValueError:
+        logger.error(
+            f"Ошибка чтения числовых параметров расписания для {job_name_prefix}. Использованы значения по умолчанию.")
+        if default_day_of_week is not None:
+            return {'day_of_week': default_day_of_week, 'hour': default_hour, 'minute': default_minute}
+        else:
+            return {'hour': default_hour, 'minute': default_minute}

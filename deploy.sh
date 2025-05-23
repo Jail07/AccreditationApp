@@ -41,71 +41,31 @@ clone_repository() {
 }
 
 # Функция: Запустить Docker Compose
-run_docker() {
-    echo "Запускаем Docker Compose..."
+run_docker_compose() {
+    echo "Запускаем Docker Compose для проекта AccreditationApp..."
     cd "$APP_DIR"
-    docker-compose down
-    docker-compose build
-    docker-compose up -d
+    # Убедимся, что переменные из .env файла доступны для docker-compose
+    if [ ! -f .env ]; then
+        echo "Файл .env не найден! Пожалуйста, создайте его с конфигурацией БД."
+        # exit 1 # Или скопируйте шаблон .env.example, если он есть
+    fi
+    docker-compose down --remove-orphans # Останавливаем и удаляем старые контейнеры
+    docker-compose build # Пересобираем образы, если Dockerfile изменился
+    docker-compose up -d # Запускаем в фоновом режиме
+    cd ..
     echo "Docker Compose запущен."
 }
 
-# Функция: Настроить и запустить systemd службу
-setup_systemd() {
-    echo "Создаём systemd службу для планировщика..."
-    cat << EOF | sudo tee $SYSTEMD_SERVICE > /dev/null
-[Unit]
-Description=Запуск планировщика задач AccreditationApp
-After=network.target
-
-[Service]
-ExecStart=/usr/bin/python3 /root/$APP_DIR/$SCHEDULER_SCRIPT
-Restart=always
-User=root
-WorkingDirectory=/root/$APP_DIR
-
-[Install]
-WantedBy=multi-user.target
-EOF
-
-    sudo systemctl daemon-reload
-    sudo systemctl enable scheduler.service
-    sudo systemctl start scheduler.service
-    echo "systemd служба настроена и запущена."
-}
-
-# Функция: Настроить cron задачу
-setup_cron() {
-    echo "Настраиваем cron задачу для планировщика..."
-    (crontab -l 2>/dev/null | grep -v "$SCHEDULER_SCRIPT"; echo "$CRON_JOB") | crontab -
-    echo "Cron задача настроена: $CRON_JOB"
-}
-
-# Основной процесс
 echo "Начинаем процесс деплоя..."
 install_dependencies
 clone_repository
-run_docker
-
-# Запрос на выбор метода автоматического запуска
-read -p "Выберите метод автоматического запуска планировщика (1 - systemd, 2 - cron): " choice
-if [ "$choice" -eq 1 ]; then
-    setup_systemd
-elif [ "$choice" -eq 2 ]; then
-    setup_cron
-else
-    echo "Неверный выбор. Пропуск настройки автоматического запуска."
-fi
+run_docker_compose # Запускаем docker-compose
 
 echo "Деплой завершён успешно!"
-# Проверка контейнеров после запуска
 echo "Проверяем состояние контейнеров..."
 docker ps -a
-
-if docker logs accr_app 2>&1 | grep -q "could not connect to display"; then
-    echo "Ошибка: Проблемы с Xvfb или xcb."
-    exit 1
-fi
+echo "Логи планировщика (scheduler):"
+docker logs -f $(docker-compose ps -q scheduler)
 
 # Инструкция для использования скрипта
 cat << EOF

@@ -7,7 +7,7 @@ from datetime import datetime, date, timedelta
 import traceback
 import time
 
-from config import get_logger, get_scheduler_output_dir  # Используем настроенный логгер
+from config import get_logger, get_scheduler_output_dir, get_schedule_config
 from database_manager import DatabaseManager
 from file_manager import FileManager
 
@@ -21,12 +21,10 @@ class Scheduler:
         # Создаем свой экземпляр DB Manager для планировщика
         try:
              self.db_manager = DatabaseManager(db_config)
-             # Используем отдельный FileManager, не связанный с GUI
              self.file_manager = FileManager()
              self.logger.info("Планировщик инициализирован с собственным DBManager.")
         except Exception as e:
              self.logger.exception("Критическая ошибка инициализации DBManager в планировщике!")
-             # Не запускаем планировщик, если БД недоступна
              self.scheduler = None
 
 
@@ -175,32 +173,51 @@ class Scheduler:
             self.logger.error("Не удалось очистить временную таблицу TD после еженедельной обработки!")
 
     def start(self):
-        """Добавляет задачи и запускает планировщик."""
+        """Добавляет задачи и запускает планировщик, используя настройки из .env."""
         if not self.scheduler:
-            self.logger.error("Планировщик не инициализирован. Запуск отменен.")
+            self.logger.error("Планировщик не инициализирован (возможно, ошибка БД). Запуск отменен.")
             return
 
         try:
-            self.logger.info("Добавление задач в планировщик...")
+            self.logger.info("Добавление задач в планировщик с настройками из .env...")
+
             # Задача проверки истекших аккредитаций (ежедневно)
+            expiry_conf = get_schedule_config('EXPIRY', default_hour=0, default_minute=5)
             self.scheduler.add_job(
                 lambda: self._run_job(self.check_accreditation_expiry_job, "Check Expiry"),
-                "cron", hour=0, minute=5, id="check_expiry", replace_existing=True
+                "cron",
+                hour=expiry_conf['hour'],
+                minute=expiry_conf['minute'],
+                id="check_expiry",
+                replace_existing=True
             )
-            # Задача генерации файлов для ПОВТОРНОЙ проверки (если статус 'в ожидании') - оставляем?
-            # Возможно, ее логика теперь избыточна, если основной поток идет через TD. Решите, нужна ли она.
+
+            # Задача генерации файлов для ПОВТОРНОЙ проверки
+            recheck_conf = get_schedule_config('RECHECK', default_day_of_week="thu", default_hour=10, default_minute=0)
             self.scheduler.add_job(
                 lambda: self._run_job(self.generate_recheck_files_job, "Generate Recheck Files"),
-                "cron", day_of_week="thu", hour=10, minute=0, id="generate_recheck", replace_existing=True
+                "cron",
+                day_of_week=recheck_conf['day_of_week'],
+                hour=recheck_conf['hour'],
+                minute=recheck_conf['minute'],
+                id="generate_recheck",
+                replace_existing=True
             )
-            # НОВАЯ Задача еженедельной выгрузки из TD (например, в пятницу вечером)
+
+            # Задача еженедельной выгрузки из TD
+            weekly_td_conf = get_schedule_config('WEEKLY_TD', default_day_of_week="fri", default_hour=18, default_minute=0)
             self.scheduler.add_job(
                 lambda: self._run_job(self.generate_weekly_check_file_job, "Generate Weekly Check File from TD"),
-                "cron", day_of_week="thu", hour=13, minute=0, id="generate_weekly_td", replace_existing=True
+                "cron",
+                day_of_week=weekly_td_conf['day_of_week'],
+                hour=weekly_td_conf['hour'],
+                minute=weekly_td_conf['minute'],
+                id="generate_weekly_td",
+                replace_existing=True
             )
 
             self.scheduler.start()
-            self.logger.info("Планировщик успешно запущен с обновленными задачами.")
+            self.logger.info("Планировщик успешно запущен с задачами, настроенными через .env.")
 
         except Exception as e:
             self.logger.exception(f"Критическая ошибка при запуске планировщика или добавлении задач: {e}")
