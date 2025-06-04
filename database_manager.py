@@ -36,17 +36,25 @@ class DatabaseManager:
         self.create_tables() # Проверяем/создаем таблицы при инициализации
 
     def _get_connection(self):
-        """Получает соединение из пула."""
-        if self._pool:
-            return self._pool.getconn()
-        else:
-            self.logger.error("Пул соединений не инициализирован.")
-            raise ConnectionError("Пул соединений недоступен.")
+        if self._pool is None:
+            self.logger.error("Пул соединений не инициализирован!")
+            raise ConnectionError("Пул соединений не инициализирован.")
+        return self._pool.getconn()  # Ключ не используется явно, SimpleConnectionPool должен справиться
 
-    def _release_connection(self, conn):
-        """Возвращает соединение в пул."""
-        if self._pool:
-            self._pool.putconn(conn)
+    def _release_connection(self, conn, exc=None):  # Добавлен параметр exc
+        if self._pool and conn:
+            try:
+                # Если было исключение, закрываем соединение, чтобы оно не вернулось в пул "грязным"
+                if exc:
+                    self._pool.putconn(conn, close=True)
+                    self.logger.warning("Соединение возвращено в пул с закрытием из-за ошибки.")
+                else:
+                    self._pool.putconn(conn)  # Без явного ключа
+                # self.logger.debug("Соединение успешно возвращено в пул.") # Закомментировано, может быть слишком много логов
+            except psycopg2.pool.PoolError as pe:  # Ловим конкретно PoolError
+                self.logger.error(f"Ошибка psycopg2.pool.PoolError при возвращении соединения в пул: {pe}")
+            except Exception as e:
+                self.logger.error(f"Неожиданная ошибка при возвращении соединения в пул: {e}")
 
     def execute_query(self, query, params=None, fetch=None, commit=False):
         """
@@ -77,13 +85,14 @@ class DatabaseManager:
                 log_query = query.strip().split('\n', 1)[0]
                 self.logger.debug(f"Запрос выполнен успешно: {log_query[:150]}...")
             return result
-        except psycopg2.Error as e:
-            if conn and commit:
+        except psycopg2.Error as e:  # Ловим специфичные ошибки psycopg2
+            if conn and commit:  # Если была ошибка при коммите, откатываем
                 try:
                     conn.rollback()
-                    self.logger.warning(f"Транзакция отменена из-за ошибки: {e}")
-                except psycopg2.Error as rb_e:
-                    self.logger.error(f"Ошибка при откате транзакции: {rb_e}")
+                except psycopg2.Error as rb_err:
+                    self.logger.error(f"Ошибка при откате транзакции: {rb_err}")
+            self.logger.error(f"Ошибка БД при выполнении запроса '{query[:100]}...': {e}")
+            exc_occurred = e  # Сохраняем исключение
             # Логируем ошибку типа параметров отдельно, если это она
             if isinstance(e, psycopg2.ProgrammingError) and "not all arguments converted" in str(e):
                 self.logger.error(
@@ -92,9 +101,16 @@ class DatabaseManager:
                 self.logger.error(
                     f"Ошибка выполнения SQL запроса: {e}\nЗапрос: {query}\nПараметры ({type(params)}): {params}")
             return None
-        except Exception as e:
-            self.logger.exception(f"Неожиданная ошибка при выполнении запроса: {e}")
-            raise
+        except Exception as e:  # Ловим другие возможные ошибки
+            if conn and commit:
+                try:
+                    conn.rollback()
+                except psycopg2.Error as rb_err:
+                    self.logger.error(f"Ошибка при откате транзакции: {rb_err}")
+            self.logger.exception(f"Неожиданная ошибка при выполнении запроса '{query[:100]}...': {e}")
+            exc_occurred = e
+            return None
+
         finally:
             if conn:
                 self._release_connection(conn)
@@ -318,7 +334,7 @@ class DatabaseManager:
                 return {'status': 'CHECKING', 'person_id': person_id}
         else:
             # Человек есть в AccrTable, но нет записей в mainTable (например, только добавлен)
-            return {'status': 'NOT_FOUND', 'person_id': person_id} # Считаем, что статус не найден
+            return {'status': 'CHECKING', 'person_id': person_id} # Считаем, что статус не найден
 
     def add_to_accrtable(self, data, status='в ожидании'):
         """

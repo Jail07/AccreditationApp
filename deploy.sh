@@ -65,7 +65,8 @@ echo "Деплой завершён успешно!"
 echo "Проверяем состояние контейнеров..."
 docker ps -a
 echo "Логи планировщика (scheduler):"
-docker logs -f $(docker-compose ps -q scheduler)
+docker logs -f $(docker compose -f "$APP_DIR/docker-compose.yml" ps -q scheduler)
+
 
 # Инструкция для использования скрипта
 cat << EOF

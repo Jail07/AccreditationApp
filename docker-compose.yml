@@ -1,8 +1,7 @@
 
 services:
   db:
-    build:
-      context: .
+    image: postgres:14
     container_name: accr_db
     ports:
       - "${DB_PORT_HOST:-5432}:5432"

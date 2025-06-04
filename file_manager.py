@@ -1,10 +1,18 @@
 # file_manager.py
 import os
 import pandas as pd
-from PyQt5.QtWidgets import QFileDialog, QMessageBox
+
 from datetime import datetime
 import logging
 from config import get_logger # Используем настроенный логгер
+
+# Только если доступен GUI
+try:
+    from PyQt5.QtWidgets import QFileDialog, QMessageBox
+    GUI_AVAILABLE = True
+except ImportError:
+    GUI_AVAILABLE = False
+    logging.warning('PyQt5 not available')
 
 class FileManager:
     def __init__(self, parent_widget=None):

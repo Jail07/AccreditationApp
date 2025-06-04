@@ -34,10 +34,6 @@ def get_scheduler_output_dir():
     return output_dir
 
 def get_db_config():
-    """
-    Загружает конфигурацию БД из переменных окружения.
-    Предоставляет значения по умолчанию, если переменные не установлены.
-    """
     logger = get_logger(__name__)
     config = {
         'database': os.getenv('DB_NAME', 'accr_db'),

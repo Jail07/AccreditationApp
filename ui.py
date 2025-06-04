@@ -725,7 +725,7 @@ class AccreditationApp(QWidget):
             elif status_db == 'ACTIVE':
                 report_key = 'ГПХ_Ранее_проверенные_активные' if is_gph else 'Подрядчики_Ранее_проверенные_активные'
                 status_check = "Активен"
-            elif status_db in ['EXPIRED', 'NOT_FOUND', 'CHECKING']:
+            elif status_db in ['EXPIRED', 'NOT_FOUND']:
                  report_key = 'ГПХ_На_проверку' if is_gph else 'Подрядчики_На_проверку'
                  status_check = "На проверку"
                  # Собираем данные для добавления в TD
@@ -831,7 +831,7 @@ class AccreditationApp(QWidget):
                     return 'Неизвестно (Accr)'
                 elif source == 'TD':
                     # Для записей из TD просто возвращаем их статус
-                    td_status = row.get('td_status', 'В TD (статус неизв.)')
+                    td_status = row.get('td_status', 'статус неизв.')
                     return f"В TD ({td_status})"  # Показываем, что запись временная
                 else:
                     return 'Источник неизв.'
@@ -1595,21 +1595,26 @@ class AccreditationApp(QWidget):
         self.logMessage(f"Запуск получения истории для ID: {person_id}", "DEBUG")
         self.run_task_in_background(self._task_show_history, self.handle_show_history_result, person_id)
 
-
+    # ui.py (в closeEvent)
     def closeEvent(self, event):
-        """Обработка закрытия окна."""
         self.logMessage("Запрос на закрытие приложения...", "INFO")
         reply = QMessageBox.question(self, 'Подтверждение выхода',
                                      "Вы уверены, что хотите выйти?",
                                      QMessageBox.Yes | QMessageBox.No, QMessageBox.No)
 
         if reply == QMessageBox.Yes:
-            self.logMessage("Закрытие пула потоков...", "INFO")
-            self.thread_pool.waitForDone() # Ждем завершения активных задач
-            # Закрытие пула соединений БД (если нужно) - лучше делать в main
-            # self.db_manager.close_pool()
-            self.logMessage("Приложение закрывается.", "INFO")
+            self.logMessage("Начало закрытия фоновых задач UI...", "INFO")
+            # Даем задачам ограниченное время на завершение
+            if not self.thread_pool.waitForDone(5000):  # Ждем 5 секунд
+                self.logMessage("Не все фоновые задачи UI завершились за 5 секунд. Возможны активные задачи.",
+                                "WARNING")
+            else:
+                self.logMessage("Все фоновые задачи UI завершены.", "INFO")
+
+            # Сигнал для основного потока main.py, что можно начинать закрытие
+            # (если закрытие пула БД и планировщика происходит в main.py)
             event.accept()
+            self.logMessage("Окно UI готово к закрытию.", "INFO")
         else:
-            self.logMessage("Выход отменен.", "INFO")
+            self.logMessage("Выход из приложения отменен пользователем.", "INFO")
             event.ignore()
