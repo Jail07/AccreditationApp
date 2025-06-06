@@ -38,15 +38,13 @@ def get_db_config():
     config = {
         'database': os.getenv('DB_NAME', 'accr_db'),
         'user': os.getenv('DB_USER', 'postgres'),
-        'password': os.getenv('DB_PASSWORD', '1234'), # Оставьте значение по умолчанию или удалите его для большей безопасности
+        'password': os.getenv('DB_PASSWORD', '1234'),
         'host': os.getenv('DB_HOST', 'localhost'),
         'port': os.getenv('DB_PORT', '5432')
     }
-    # Проверка наличия пароля (если нет значения по умолчанию)
     if not config['password'] and os.getenv('DB_PASSWORD') is None:
          logger.warning("Пароль БД не найден в переменных окружения (DB_PASSWORD). Используется пустое значение или стандартное.")
-         # Можно добавить логику запроса пароля или выбросить исключение
-         # raise ValueError("DB_PASSWORD environment variable not set.")
+
 
     # Попытка преобразовать порт в int
     try:

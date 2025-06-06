@@ -61,6 +61,10 @@ class Scheduler:
             gph_df_report = gph_df[['surname', 'name', 'middle_name', 'birth_date', 'organization', 'position']].fillna('')
             gph_df_report.columns = ['Фамилия', 'Имя', 'Отчество', 'Дата рождения', 'Организация', 'Должность']
             gph_df_report['Дата рождения'] = pd.to_datetime(gph_df_report['Дата рождения']).dt.strftime('%d.%m.%Y')
+            # --- ДОБАВЛЕНО: Столбец для проверки ---
+            gph_df_report['Результат проверки'] = ''
+            gph_df_report['Примечания проверяющего'] = ''
+            # ------------------------------------
             self.file_manager.generate_file_scheduler(gph_df_report, "Запрос_на_проверку_ГПХ")
         else:
             self.logger.info("Нет сотрудников ГПХ со статусом 'в ожидании' для генерации файла.")
@@ -70,6 +74,10 @@ class Scheduler:
             contractor_df_report = contractor_df[['surname', 'name', 'middle_name', 'birth_date', 'organization', 'position']].fillna('')
             contractor_df_report.columns = ['Фамилия', 'Имя', 'Отчество', 'Дата рождения', 'Организация', 'Должность']
             contractor_df_report['Дата рождения'] = pd.to_datetime(contractor_df_report['Дата рождения']).dt.strftime('%d.%m.%Y')
+            # --- ДОБАВЛЕНО: Столбец для проверки ---
+            contractor_df_report['Результат проверки'] = ''
+            contractor_df_report['Примечания проверяющего'] = ''
+            # ------------------------------------
             self.file_manager.generate_file_scheduler(contractor_df_report, "Запрос_на_проверку_Подрядчики")
         else:
              self.logger.info("Нет сотрудников Подрядчиков со статусом 'в ожидании' для генерации файла.")
@@ -105,6 +113,11 @@ class Scheduler:
         df_report.rename(columns=rename_map, inplace=True)
         if 'Дата рождения' in df_report.columns:
              df_report['Дата рождения'] = pd.to_datetime(df_report['Дата рождения']).dt.strftime('%d.%m.%Y')
+
+        # --- ДОБАВЛЕНО: Столбец для проверки ---
+        df_report['Результат проверки'] = ''
+        df_report['Примечания проверяющего'] = ''
+        # ------------------------------------
 
         filename_prefix = "Еженедельный_список_на_проверку"
         saved_path = self.file_manager.generate_file_scheduler(df_report, filename_prefix)

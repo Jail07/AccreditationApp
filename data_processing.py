@@ -146,7 +146,7 @@ class DataProcessor:
 
         # data_processing.py (добавление нового метода)
 
-    def validate_dates(self, df, date_column='Дата рождения', min_year=1950):
+    def validate_dates(self, df, date_column='Дата рождения', min_year=1900):
         """
         Проверяет корректность дат в указанной колонке.
         Возвращает словарь {индекс: сообщение_об_ошибке}.

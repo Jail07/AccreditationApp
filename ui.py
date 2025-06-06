@@ -290,7 +290,7 @@ class AccreditationApp(QWidget):
         self.dataTable = QTableWidget()
         self.dataTable.setColumnCount(13) # Увеличено для статуса и ID
         self.dataTable.setHorizontalHeaderLabels([
-            'ID', 'Фамилия', 'Имя', 'Отчество', 'Дата рождения',
+            'ID', 'Фамилия', 'Имя', 'Отчество', 'Дата рождения', 
             'Организация', 'Должность', 'Статус БД', 'Статус Проверки',
             'Ошибки Валидации', 'Прим.',
             'Начало аккр.', 'Конец аккр.'
@@ -629,7 +629,7 @@ class AccreditationApp(QWidget):
         # --- ОТЛАДКА ---
         signals.log.emit(f"Тип ПЕРЕД validate_dates: {type(df_validated)}", "DEBUG")
         # ---------------
-        date_errors = self.processor.validate_dates(df_validated, min_year=1950)  # Используем проверенный df_validated
+        date_errors = self.processor.validate_dates(df_validated, min_year=1900)  # Используем проверенный df_validated
         for idx, error_msg in date_errors.items():
             # Добавляем ошибку даты к существующим ошибкам валидации
             current_errors = df_validated.loc[idx, 'Validation_Errors']
@@ -701,8 +701,8 @@ class AccreditationApp(QWidget):
         reports = {
             'ГПХ_Ранее_отведенные': pd.DataFrame(),
             'Подрядчики_Ранее_отведенные': pd.DataFrame(),
-            'ГПХ_Ранее_проверенные_активные': pd.DataFrame(),
-            'Подрядчики_Ранее_проверенные_активные': pd.DataFrame(),
+            'ГПХ_Ранее_проверенные': pd.DataFrame(),
+            'Подрядчики_Ранее_проверенные': pd.DataFrame(),
             'ГПХ_На_проверку': pd.DataFrame(),
             'Подрядчики_На_проверку': pd.DataFrame(),
             'Ошибки_и_Отклоненные': df_invalid # Добавляем отчет об ошибках
@@ -723,7 +723,7 @@ class AccreditationApp(QWidget):
                 report_key = 'ГПХ_Ранее_отведенные' if is_gph else 'Подрядчики_Ранее_отведенные'
                 status_check = "Ранее отведен"
             elif status_db == 'ACTIVE':
-                report_key = 'ГПХ_Ранее_проверенные_активные' if is_gph else 'Подрядчики_Ранее_проверенные_активные'
+                report_key = 'ГПХ_Ранее_проверенные' if is_gph else 'Подрядчики_Ранее_проверенные'
                 status_check = "Активен"
             elif status_db in ['EXPIRED', 'NOT_FOUND']:
                  report_key = 'ГПХ_На_проверку' if is_gph else 'Подрядчики_На_проверку'
@@ -746,7 +746,7 @@ class AccreditationApp(QWidget):
         df_display = pd.concat([df_to_process, df_invalid], ignore_index=True).fillna('')
         # Убедимся, что все нужные колонки есть
         all_cols = [
-            'ID', 'Фамилия', 'Имя', 'Отчество', 'Дата рождения',
+            'ID', 'Фамилия', 'Имя', 'Отчество', 'Дата рождения', 'Место рождения',
             'Организация', 'Должность', 'Статус БД', 'Статус Проверки',
             'Ошибки Валидации', 'Прим.',
             'Начало аккр.', 'Конец аккр.'
@@ -771,7 +771,7 @@ class AccreditationApp(QWidget):
             # Возвращаем пустой DataFrame, чтобы очистить таблицу
             return pd.DataFrame(
                 columns=[
-            'ID', 'Фамилия', 'Имя', 'Отчество', 'Дата рождения',
+            'ID', 'Фамилия', 'Имя', 'Отчество', 'Дата рождения', 'Место рождения',
             'Организация', 'Должность', 'Статус БД', 'Статус Проверки',
             'Ошибки Валидации', 'Прим.',
             'Начало аккр.', 'Конец аккр.'
@@ -789,22 +789,22 @@ class AccreditationApp(QWidget):
                 # Возвращаем пустой DataFrame с НОВЫМ набором колонок
                 return pd.DataFrame(
                     columns=[
-            'ID', 'Фамилия', 'Имя', 'Отчество', 'Дата рождения',
-            'Организация', 'Должность', 'Статус БД', 'Статус Проверки',
-            'Ошибки Валидации', 'Прим.',
-            'Начало аккр.', 'Конец аккр.'
-        ])
+                            'ID', 'Фамилия', 'Имя', 'Отчество', 'Дата рождения', 'Место рождения',
+                            'Организация', 'Должность', 'Статус БД', 'Статус Проверки',
+                            'Ошибки Валидации', 'Прим.',
+                            'Начало аккр.', 'Конец аккр.'
+                        ])
 
             df_results = pd.DataFrame(results)
             if df_results.empty:
                 signals.log.emit(f"По запросу '{search_term}' ничего не найдено (после DataFrame).", "INFO")
                 return pd.DataFrame(
                     columns=[
-            'ID', 'Фамилия', 'Имя', 'Отчество', 'Дата рождения',
-            'Организация', 'Должность', 'Статус БД', 'Статус Проверки',
-            'Ошибки Валидации', 'Прим.',
-            'Начало аккр.', 'Конец аккр.'
-        ])
+                            'ID', 'Фамилия', 'Имя', 'Отчество', 'Дата рождения', 'Место рождения',
+                            'Организация', 'Должность', 'Статус БД', 'Статус Проверки',
+                            'Ошибки Валидации', 'Прим.',
+                            'Начало аккр.', 'Конец аккр.'
+                        ])
 
             # --- Определение Статус БД ---
             now_tz = datetime.now(self.timezone)
@@ -894,7 +894,7 @@ class AccreditationApp(QWidget):
                  df_display['Дата рождения'] = df_display['Дата рождения'].apply(format_birth_date)
             if 'Начало аккр.' in df_display.columns:
                  df_display['Начало аккр.'] = df_display['Начало аккр.'].apply(lambda x: format_timestamp_date(x, signals, 'Начало аккр.'))
-                 print(df_display['Начало аккр.'])
+                 # print(df_display['Начало аккр.'])
             if 'Конец аккр.' in df_display.columns:
                  df_display['Конец аккр.'] = df_display['Конец аккр.'].apply(lambda x: format_timestamp_date(x, signals, 'Конец аккр.'))
 
@@ -1096,7 +1096,7 @@ class AccreditationApp(QWidget):
             success, message, person_id = self.db_manager.activate_person_by_details(
                 surname, name, middle_name, birth_date
             )
-            signals.log.emit(f"Строка {index + 1}: {success} {message} {person_id} {surname} {name}...",
+            signals.log.emit(f"Строка {index + 1}: {success} {message} ID: {person_id}",
                              "WARNING")
 
 
@@ -1121,12 +1121,12 @@ class AccreditationApp(QWidget):
                     'Должность': row.get('Должность', 'Не указана'),
                     'Примечания': row.get('Примечания', '')  # И примечания, если есть в файле
                 }
-                print(1)
+                # print(1)
                 signals.request_new_employee_action.emit(request_data, index)
                 # Ждем ответа пользователя
                 while index not in self.new_employee_actions:
                     QThread.msleep(100)
-                print(2)
+                # print(2)
                 action = self.new_employee_actions.get(index, 'skip')
 
                 if action == 'activate':

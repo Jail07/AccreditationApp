@@ -4,7 +4,7 @@ import pandas as pd
 
 from datetime import datetime
 import logging
-from config import get_logger # Используем настроенный логгер
+from config import get_logger, get_scheduler_output_dir  # Используем настроенный логгер
 
 # Только если доступен GUI
 try:
@@ -19,6 +19,42 @@ class FileManager:
         # parent_widget нужен только для QFileDialog
         self.parent_widget = parent_widget
         self.logger = get_logger(__name__)
+
+    def _apply_excel_formatting(self, df, writer, sheet_name):
+        """
+        Применяет форматирование к листу Excel: автоширина столбцов и границы.
+        df: DataFrame, который был записан.
+        writer: объект pandas ExcelWriter.
+        sheet_name: имя листа для форматирования.
+        """
+        if df.empty:
+            return
+
+        workbook = writer.book
+        worksheet = writer.sheets[sheet_name]
+
+        # 1. Формат для границ
+        border_format = workbook.add_format({'border': 1})
+
+        # Применяем границы ко всем ячейкам с данными и заголовкам
+        # Формат: (первая_строка, первый_столбец, последняя_строка, последний_столбец, формат)
+        worksheet.conditional_format(0, 0, len(df), len(df.columns) - 1, {
+            'type': 'no_blanks',  # Применяем ко всем непустым ячейкам
+            'format': border_format
+        })
+        # Принудительно применяем к заголовкам тоже
+        for col_num, value in enumerate(df.columns.values):
+            worksheet.write(0, col_num, value, border_format)
+
+        # 2. Автоматическая ширина столбцов
+        for idx, col in enumerate(df.columns):
+            # Находим максимальную ширину в столбце (учитывая заголовок)
+            max_len = max(
+                len(str(col)),  # Длина заголовка
+                df[col].astype(str).str.len().max()  # Максимальная длина значения в столбце
+            )
+            # Устанавливаем ширину с небольшим запасом
+            worksheet.set_column(idx, idx, max_len + 2)
 
     def open_file_dialog(self):
         """Открывает диалог выбора Excel файла."""
@@ -79,96 +115,82 @@ class FileManager:
 
     def save_reports(self, reports_dict):
         """
-        Сохраняет несколько DataFrame из словаря в выбранную пользователем ПАПКУ.
-        reports_dict: {'Название_отчета': DataFrame}
-        Возвращает количество успешно сохраненных файлов.
+        Сохраняет несколько отчетов (DataFrame'ов) в один ФОРМАТИРОВАННЫЙ Excel файл,
+        каждый на своем листе.
+        reports_dict: словарь, где ключ - имя листа, значение - DataFrame.
         """
-        if not reports_dict or all(df.empty for df in reports_dict.values()):
-             self.logger.warning("Нет непустых отчетов для сохранения.")
-             QMessageBox.warning(self.parent_widget, "Нет данных", "Нет непустых отчетов для сохранения.")
-             return 0
+        column_rename_map = {"Validation_Errors": "Ошибка данных"}
+        columns_to_remove = ["Статус БД", "ID", "Статус Проверки"]
 
-        self.logger.info(f"Запрос на сохранение {len(reports_dict)} отчетов в одну папку.")
+        # Удаляем их из всех DataFrame'ов в отчете
+        for sheet_name, df in reports_dict.items():
+            reports_dict[sheet_name] = df.drop(columns=[col for col in columns_to_remove if col in df.columns])
 
-        # Запрашиваем у пользователя директорию для сохранения
-        selected_directory = QFileDialog.getExistingDirectory(
-            self.parent_widget,
-            "Выберите папку для сохранения отчетов",
-            "" # Начальная директория (можно указать)
+        # Подготовка отчетов с фильтрацией и переименованием
+        filtered_reports = {}
+        # Фильтрация и переименование
+        for df in reports_dict.values():
+            df.rename(columns=column_rename_map, inplace=True)
+
+        total_files_to_save = sum(1 for df in reports_dict.values() if not df.empty)
+        if total_files_to_save == 0:
+            QMessageBox.information(self.parent_widget, "Нет данных", "Нет данных для сохранения в отчеты.")
+            return 0
+
+        save_path, _ = QFileDialog.getSaveFileName(
+            self.parent_widget, "Сохранить отчеты как...", f"Отчет_{datetime.now().strftime('%Y%m%d')}.xlsx",
+            "Excel Files (*.xlsx)"
         )
 
-        if not selected_directory:
-            self.logger.info("Выбор папки для сохранения отчетов отменен пользователем.")
-            return 0 # Возвращаем 0, если отменено
+        if not save_path:
+            return 0
 
-        self.logger.info(f"Отчеты будут сохранены в: {selected_directory}")
         saved_count = 0
-        total_files_to_save = 0
-        errors = []
+        print("Список листов в отчёте:", reports_dict.keys())
 
-        timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-
-        for report_name, df in reports_dict.items():
-            if df is not None and not df.empty:
-                total_files_to_save += 1
-                # Формируем имя файла
-                filename = f"{report_name}_{timestamp}.xlsx"
-                save_path = os.path.join(selected_directory, filename)
-
-                try:
-                    df.to_excel(save_path, index=False, engine='openpyxl')
-                    self.logger.info(f"Отчет '{report_name}' успешно сохранен как: {filename}")
-                    saved_count += 1
-                except ImportError:
-                     err_msg = "Ошибка сохранения: движок 'openpyxl' не установлен. Установите: pip install openpyxl"
-                     self.logger.exception(err_msg)
-                     errors.append(f"Не удалось сохранить '{filename}': {err_msg}")
-                     # Прерываем сохранение, если нет движка
-                     break
-                except Exception as e:
-                    self.logger.exception(f"Ошибка при сохранении отчета '{report_name}' в {save_path}: {e}")
-                    errors.append(f"Не удалось сохранить '{filename}': {e}")
-            else:
-                self.logger.info(f"Отчет '{report_name}' пуст, сохранение пропущено.")
-
-        # Сообщение пользователю по итогам
-        if saved_count == total_files_to_save and total_files_to_save > 0:
-             QMessageBox.information(self.parent_widget, "Успешно", f"Успешно сохранено {saved_count} отчетов в папку:\n{selected_directory}")
-        elif saved_count > 0:
-             error_details = "\n".join(errors)
-             QMessageBox.warning(self.parent_widget, "Завершено с ошибками",
-                                 f"Сохранено {saved_count} из {total_files_to_save} отчетов в папку:\n{selected_directory}\n\nОшибки:\n{error_details}")
-        elif errors:
-             error_details = "\n".join(errors)
-             QMessageBox.critical(self.parent_widget, "Ошибка сохранения", f"Не удалось сохранить ни одного отчета.\n\nОшибки:\n{error_details}")
-        # Если total_files_to_save == 0, сообщение было показано ранее.
+        try:
+            with pd.ExcelWriter(save_path, engine='xlsxwriter') as writer:
+                for sheet_name, df_report in reports_dict.items():
+                    if not df_report.empty:
+                        df_report.to_excel(writer, sheet_name=sheet_name, index=False)
+                        # Применяем форматирование для каждого листа
+                        self._apply_excel_formatting(df_report, writer, sheet_name)
+                        saved_count += 1
+            QMessageBox.information(self.parent_widget, "Успешно", f"Отчеты успешно сохранены в файл:\n{save_path}")
+        except Exception as e:
+            error_details = str(e)
+            self.logger.exception(f"Ошибка при сохранении отчетов в Excel: {e}")
+            QMessageBox.critical(self.parent_widget, "Ошибка сохранения", f"Не удалось сохранить отчеты.\n\nОшибка: {error_details}")
 
         self.logger.info(f"Сохранено {saved_count} из {total_files_to_save} непустых отчетов.")
         return saved_count
+
     def generate_file_scheduler(self, df, filename_prefix):
         """
-        Генерирует файл в предопределенной папке (для планировщика).
+        Генерирует ФОРМАТИРОВАННЫЙ файл в предопределенной папке (для планировщика).
         Возвращает путь к файлу или None.
         """
         if df is None or df.empty:
             self.logger.warning(f"Планировщик: Нет данных для генерации файла {filename_prefix}.")
             return None
 
-        output_dir = "scheduler_output" # Папка для файлов планировщика
-        os.makedirs(output_dir, exist_ok=True) # Создаем папку, если её нет
+        output_dir = get_scheduler_output_dir() # Используем функцию из config.py
+        os.makedirs(output_dir, exist_ok=True)
 
-        timestamp = datetime.now().strftime('%Y%m%d')
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M')
         filename = f"{filename_prefix}_{timestamp}.xlsx"
         save_path = os.path.join(output_dir, filename)
+        sheet_name = 'Данные' # Название листа внутри Excel файла
 
         try:
-            df.to_excel(save_path, index=False, engine='openpyxl')
-            self.logger.info(f"Планировщик: Файл успешно сгенерирован: {save_path}")
+            # Используем ExcelWriter с движком xlsxwriter
+            with pd.ExcelWriter(save_path, engine='xlsxwriter') as writer:
+                df.to_excel(writer, sheet_name=sheet_name, index=False)
+                # Применяем форматирование
+                self._apply_excel_formatting(df, writer, sheet_name)
+
+            self.logger.info(f"Планировщик: Файл успешно сгенерирован и отформатирован: {save_path}")
             return save_path
-        except ImportError:
-             self.logger.exception("Ошибка генерации файла: движок 'openpyxl' не установлен.")
-             # В планировщике нет GUI, просто логируем
-             return None
         except Exception as e:
-            self.logger.exception(f"Планировщик: Ошибка при генерации файла {save_path}: {e}")
+            self.logger.exception(f"Ошибка при генерации отформатированного файла: {e}")
             return None

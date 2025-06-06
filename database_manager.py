@@ -211,6 +211,10 @@ class DatabaseManager:
         if not all(field in data and pd.notna(data[field]) for field in required_fields_from_data):
             self.logger.warning(f"Пропущена запись в TD из-за отсутствия обязательных полей в data: {data}")
             return None
+        person_id_td = self.find_person_in_td(data['Фамилия'], data['Имя'], data['Отчество'], data['Дата рождения'])
+        if person_id_td is not None:
+            self.logger.warning(f"Такой сотрудник уже есть в TD")
+            return person_id_td
 
         # --- ИЗМЕНЕНИЕ: Переход на %s плейсхолдеры ---
         query = """
@@ -238,7 +242,6 @@ class DatabaseManager:
             data.get('status', data.get('Статус Проверки', 'На проверку')),
             now_tz
         )
-
 
         result = self.execute_query(query, params_tuple, fetch='one', commit=True)
 
@@ -277,7 +280,7 @@ class DatabaseManager:
     def find_person_in_td(self, surname, name, middle_name, birth_date):
         """Ищет человека в TD. Возвращает ID или None."""
         if not surname or not name or not birth_date:
-             self.logger.warning("Попытка поиска в AccrTable без ФИО или даты рождения.")
+             self.logger.warning("Попытка поиска в TD без ФИО или даты рождения.")
              return None # Не можем искать без основных данных
 
         # Стандартизация middle_name: None и '' считаем эквивалентными
@@ -360,12 +363,18 @@ class DatabaseManager:
         except Exception as e:
             pass
         person_id = self.find_person_in_accrtable(
-            data.get('surname'), data.get('name'), data.get('middle_name'), data.get('birth_date')
+            data.get('Фамилия'), data.get('Имя'), data.get('Отчество'), data.get('Дата рождения')
         )
         if person_id:
-            self.logger.info(f"Человек {data.get('surname')} {data.get('name')} уже существует в AccrTable (ID: {person_id}).")
+            self.logger.info(f"Человек {data.get('Фамилия')} {data.get('Имя')} уже существует в AccrTable (ID: {person_id}).")
             # Опционально: Обновить данные существующей записи?
             return person_id
+        person_id = self.find_person_in_td(
+            data.get('Фамилия'), data.get('Имя'), data.get('Отчество'), data.get('Дата рождения')
+        )
+        if person_id:
+            query_delete = "DELETE FROM TD WHERE id = %s"
+            self.execute_query(query_delete, (person_id,), commit=True)
 
         # --- ИЗМЕНЕНИЕ ЗАПРОСА И ПАРАМЕТРОВ ---
         query = """
@@ -373,7 +382,6 @@ class DatabaseManager:
         VALUES (%(surname)s, %(name)s, %(middle_name)s, %(birth_date)s, %(birth_place)s, %(registration)s, %(organization)s, %(position)s, %(notes)s, %(status)s, %(added_date)s)
         RETURNING id;
         """
-
 
         # Передаем ТОЛЬКО СЛОВАРЬ params в execute_query
         result = self.execute_query(query, params, fetch='one', commit=True)
@@ -467,6 +475,11 @@ class DatabaseManager:
         original_accr_status_if_exists = None
 
         if not person_id:
+            person_id_td = self.find_person_in_td(surname, name, middle_name, birth_date)
+            if person_id_td is not None:
+                query_delete = "DELETE FROM TD WHERE id = %s"
+                self.execute_query(query_delete, (person_id_td,), commit=True)
+                print("удалил если был")
             # --- Сотрудника нет, добавляем сразу в ЧС ---
             self.logger.info(f"toggle_blacklist: Сотрудник {surname} {name} не найден. Добавление в ЧС...")
             # Собираем данные для AccrTable из person_data
@@ -487,11 +500,10 @@ class DatabaseManager:
                 return None, "Ошибка добавления нового сотрудника."
 
             # Запись в mainTable с black_list = TRUE
-            query_main = """
-            INSERT INTO mainTable (person_id, black_list, last_checked)
-            VALUES (%s, TRUE, %s) RETURNING id;
-            """
-            main_record = self.execute_query(query_main, (person_id, now_tz), fetch='one', commit=True)
+            query_main = """UPDATE mainTable SET black_list = TRUE, last_checked = %s WHERE person_id = %s"""
+            query_main_check = """SELECT id FROM mainTable WHERE person_id = %s"""
+            self.execute_query(query_main, (now_tz, person_id), commit=True)
+            main_record = self.execute_query(query_main_check, (person_id,), fetch='one')
             if main_record:
                 self.log_transaction(person_id, 'Добавлен в ЧС (новый)', f"Статус Accr: отведен")
                 action_taken = "добавлен в черный список (новый)"
@@ -501,6 +513,11 @@ class DatabaseManager:
                 # По-хорошему, откатить добавление в AccrTable, но это усложнит
                 return None, "Ошибка создания записи о ЧС."
         else:
+            person_id_td = self.find_person_in_td(surname, name, middle_name, birth_date)
+            if person_id_td is not None:
+                query_delete = "DELETE FROM TD WHERE id = %s"
+                self.execute_query(query_delete, (person_id_td,), commit=True)
+                print("удалил если был")
             # --- Сотрудник существует, переключаем статус ЧС ---
             # Сохраняем текущий статус AccrTable перед изменением
             current_accr_q = "SELECT status FROM AccrTable WHERE id = %s"
@@ -521,19 +538,29 @@ class DatabaseManager:
             main_table_id = main_state['id']
 
             query_update_main = "UPDATE mainTable SET black_list = %s, last_checked = %s WHERE id = %s"
-            res_main = self.execute_query(query_update_main, (new_blacklist_status, now_tz, main_table_id), commit=False) # commit=False
+            self.execute_query(query_update_main, (new_blacklist_status, now_tz, main_table_id), commit=True) # commit=False
+            query_main_check = """SELECT black_list FROM mainTable WHERE id = %s"""
+            res_main = self.execute_query(query_main_check, (main_table_id,), fetch='one') # commit=False
             conn = self._get_connection()
+            # print(main_table_id)
+            # print(res_main, res_main['black_list'])
+            # print(new_blacklist_status)
+            # print(res_main['black_list'] == new_blacklist_status)
 
-            if res_main is not None: # Успех без коммита (None)
+            if res_main is not None and res_main['black_list'] == new_blacklist_status: # Успех без коммита (None)
+                # print("zashol")
+
                 if new_blacklist_status:
+                    # print("zashol2")
                     # --- Помещаем в ЧС ---
                     accr_status_new = 'отведен'
                     action_taken = "добавлен в черный список"
                     query_update_accr = "UPDATE AccrTable SET status = %s WHERE id = %s"
-                    self.execute_query(query_update_accr, (accr_status_new, person_id), commit=True) # Коммитим обе транзакции
+                    self.execute_query(query_update_accr, (accr_status_new, person_id),  commit=True) # Коммитим обе транзакции
                     self.log_transaction(person_id, 'Добавлен в ЧС', f"Старый статус Accr: {original_accr_status_if_exists}, Новый: {accr_status_new}")
                     return action_taken, f"Сотрудник {surname} {name} помещен в ЧС."
                 else:
+                    # print("zashol3")
                     # --- Убираем из ЧС ---
                     self.logger.info(f"Сотрудник {surname} {name} (ID: {person_id}) убирается из ЧС.")
                     # Проверяем, был ли он только "отведен" из-за ЧС
@@ -547,6 +574,7 @@ class DatabaseManager:
                     # Лучше ориентироваться на то, что если он был в ЧС и его оттуда убирают,
                     # и он НЕ аккредитован, то он должен пройти проверку (в TD)
                     if not has_active_accreditation:
+                        # print("zashol4")
                         self.logger.info(f"Сотрудник ID {person_id} не имеет активной аккредитации. Перенос в TD и удаление из Accr/mainTable...")
                         # 1. Получаем данные из AccrTable для TD
                         accr_details_q = "SELECT *, notes AS \"Примечания\" FROM AccrTable WHERE id = %s" # Добавляем алиас для Примечаний
@@ -571,7 +599,7 @@ class DatabaseManager:
                                 self.log_transaction(person_id, 'Снят с ЧС и перенесен в TD')
                                 # 2. Удаляем из mainTable и AccrTable (после успешного добавления в TD)
                                 # Сначала mainTable из-за FOREIGN KEY
-                                self.execute_query("DELETE FROM mainTable WHERE person_id = %s", (person_id,), commit=False)
+                                self.execute_query("DELETE FROM mainTable WHERE person_id = %s", (person_id,), commit=True)
                                 self.execute_query("DELETE FROM AccrTable WHERE id = %s", (person_id,), commit=True) # Коммитим оба удаления
                                 self.logger.info(f"Сотрудник ID {person_id} удален из AccrTable/mainTable.")
                                 action_taken = "убран из черного списка и перенесен в TD"
