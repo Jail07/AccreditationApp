@@ -115,55 +115,90 @@ class FileManager:
 
     def save_reports(self, reports_dict):
         """
-        Сохраняет несколько отчетов (DataFrame'ов) в один ФОРМАТИРОВАННЫЙ Excel файл,
-        каждый на своем листе.
-        reports_dict: словарь, где ключ - имя листа, значение - DataFrame.
+        Сохраняет листы из reports_dict в два отдельных Excel-файла:
+        - Все листы с "ГПХ" в названии -> в файл *_ГПХ.xlsx
+        - Все листы с "Подрядчики" и "Ошибки_Подрядчики" -> в файл *_Подрядчики.xlsx
         """
-        column_rename_map = {"Validation_Errors": "Ошибка данных"}
-        columns_to_remove = ["Статус БД", "ID", "Статус Проверки"]
-
-        # Удаляем их из всех DataFrame'ов в отчете
-        for sheet_name, df in reports_dict.items():
-            reports_dict[sheet_name] = df.drop(columns=[col for col in columns_to_remove if col in df.columns])
-
-        # Подготовка отчетов с фильтрацией и переименованием
-        filtered_reports = {}
-        # Фильтрация и переименование
-        for df in reports_dict.values():
-            df.rename(columns=column_rename_map, inplace=True)
-
-        total_files_to_save = sum(1 for df in reports_dict.values() if not df.empty)
-        if total_files_to_save == 0:
+        if not any(not df.empty for df in reports_dict.values()):
             QMessageBox.information(self.parent_widget, "Нет данных", "Нет данных для сохранения в отчеты.")
             return 0
 
-        save_path, _ = QFileDialog.getSaveFileName(
-            self.parent_widget, "Сохранить отчеты как...", f"Отчет_{datetime.now().strftime('%Y%m%d')}.xlsx",
+        # Спросим у пользователя базовое имя и путь для отчетов
+        save_path_base, _ = QFileDialog.getSaveFileName(
+            self.parent_widget,
+            "Укажите базовое имя для отчетов (будет создано 2 файла)",
+            f"Отчет_{datetime.now().strftime('%Y%m%d')}",
             "Excel Files (*.xlsx)"
         )
 
-        if not save_path:
+        if not save_path_base:
             return 0
 
-        saved_count = 0
-        print("Список листов в отчёте:", reports_dict.keys())
+        # Убираем расширение .xlsx, если пользователь его добавил
+        if save_path_base.endswith('.xlsx'):
+            save_path_base = save_path_base[:-5]
 
+        # Определяем полные имена для двух файлов
+        file_gph_path = f"{save_path_base}_ГПХ.xlsx"
+        file_others_path = f"{save_path_base}_Подрядчики.xlsx"
+
+        # Колонки, которые не нужны в отчетах
+        columns_to_remove = ["Статус БД", "ID", "Статус Проверки", "Name_Check_Required"]
+        # Как переименовать колонку с ошибками
+        column_rename_map = {"Validation_Errors": "Причина отклонения"}
+
+        saved_sheets_count = 0
         try:
-            with pd.ExcelWriter(save_path, engine='xlsxwriter') as writer:
-                for sheet_name, df_report in reports_dict.items():
-                    if not df_report.empty:
-                        df_report.to_excel(writer, sheet_name=sheet_name, index=False)
-                        # Применяем форматирование для каждого листа
-                        self._apply_excel_formatting(df_report, writer, sheet_name)
-                        saved_count += 1
-            QMessageBox.information(self.parent_widget, "Успешно", f"Отчеты успешно сохранены в файл:\n{save_path}")
+            # --- Файл 1: Только ГПХ ---
+            with pd.ExcelWriter(file_gph_path, engine='xlsxwriter') as writer_gph:
+                self.logger.info(f"Создание файла для ГПХ: {file_gph_path}")
+                for sheet_name, df in reports_dict.items():
+                    if "ГПХ" in sheet_name and not df.empty:
+                        df_to_write = df.drop(columns=[col for col in columns_to_remove if col in df.columns],
+                                              errors='ignore')
+                        df_to_write.rename(columns=column_rename_map, inplace=True)
+
+                        # Создаем более читаемое имя листа
+                        clean_sheet_name = sheet_name.replace('ГПХ_', '').replace('_', ' ')
+                        df_to_write.to_excel(writer_gph, sheet_name=clean_sheet_name, index=False)
+                        self._apply_excel_formatting(df_to_write, writer_gph, clean_sheet_name)
+                        saved_sheets_count += 1
+
+            # --- Файл 2: Подрядчики и их ошибки ---
+            with pd.ExcelWriter(file_others_path, engine='xlsxwriter') as writer_others:
+                self.logger.info(f"Создание файла для Подрядчиков: {file_others_path}")
+                for sheet_name, df in reports_dict.items():
+                    if "Подрядчики" in sheet_name and not df.empty:
+                        df_to_write = df.drop(columns=[col for col in columns_to_remove if col in df.columns],
+                                              errors='ignore')
+                        df_to_write.rename(columns=column_rename_map, inplace=True)
+
+                        clean_sheet_name = sheet_name.replace('Подрядчики_', '').replace('_', ' ')
+                        df_to_write.to_excel(writer_others, sheet_name=clean_sheet_name, index=False)
+                        self._apply_excel_formatting(df_to_write, writer_others, clean_sheet_name)
+                        saved_sheets_count += 1
+
+            if saved_sheets_count > 0:
+                QMessageBox.information(
+                    self.parent_widget,
+                    "Успешно",
+                    f"Отчеты успешно сохранены в два файла:\n\n1. {os.path.basename(file_gph_path)}\n2. {os.path.basename(file_others_path)}"
+                )
+            else:
+                QMessageBox.information(self.parent_widget, "Нет данных",
+                                        "Данных для сохранения в отчеты не найдено после фильтрации.")
+
         except Exception as e:
             error_details = str(e)
-            self.logger.exception(f"Ошибка при сохранении отчетов в Excel: {e}")
-            QMessageBox.critical(self.parent_widget, "Ошибка сохранения", f"Не удалось сохранить отчеты.\n\nОшибка: {error_details}")
+            self.logger.exception(f"Ошибка при сохранении отчетов: {e}")
+            QMessageBox.critical(
+                self.parent_widget,
+                "Ошибка сохранения",
+                f"Не удалось сохранить файлы отчетов.\n\nОшибка: {error_details}"
+            )
 
-        self.logger.info(f"Сохранено {saved_count} из {total_files_to_save} непустых отчетов.")
-        return saved_count
+        self.logger.info(f"Успешно сохранено {saved_sheets_count} листов в два Excel файла.")
+        return saved_sheets_count
 
     def generate_file_scheduler(self, df, filename_prefix):
         """

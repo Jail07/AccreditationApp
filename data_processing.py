@@ -7,6 +7,42 @@ import unicodedata
 import logging
 from config import get_logger
 
+
+def process_data_chunk(df_chunk):
+    """
+    Функция, которая выполняет ПОЛНУЮ очистку и валидацию одного чанка DataFrame.
+    Эта функция будет выполняться в отдельном процессе.
+    """
+    # Создаем экземпляр процессора внутри функции для каждого процесса
+    processor = DataProcessor()
+
+    # Последовательно применяем все шаги обработки:
+
+    # 1. Очистка строк
+    df_cleaned = processor.clean_dataframe(df_chunk)
+
+    # 2. Валидация обязательных полей (создает колонку 'Validation_Errors')
+    df_validated_fields = processor.validate_data(df_cleaned)
+
+    # 3. Валидация дат (добавляет ошибки в ту же колонку 'Validation_Errors')
+    date_errors = processor.validate_dates(df_validated_fields, min_year=1900)
+    for idx, error_msg in date_errors.items():
+        current_errors = df_validated_fields.loc[idx, 'Validation_Errors']
+        if pd.isna(current_errors):
+            df_validated_fields.loc[idx, 'Validation_Errors'] = error_msg
+        else:
+            df_validated_fields.loc[idx, 'Validation_Errors'] += f"; {error_msg}"
+
+    # 4. Поиск подозрительных имен (создает колонку 'Name_Check_Required')
+    suspicious_indices = processor.detect_unusual_names(df_validated_fields)
+    df_validated_fields['Name_Check_Required'] = False
+    if suspicious_indices:
+        # Устанавливаем флаг для подозрительных строк
+        df_validated_fields.loc[suspicious_indices, 'Name_Check_Required'] = True
+
+    # Возвращаем полностью обработанный чанк
+    return df_validated_fields
+
 class DataProcessor:
     def __init__(self):
         self.logger = get_logger(__name__)
@@ -201,7 +237,7 @@ class DataProcessor:
                         row_errors.append(f"Отсутствует колонка '{field}'")
                         continue  # Переходим к следующему полю
 
-                    if field not in row or pd.isna(row[field]) or str(row[field]).strip() == '':
+                    if field not in row or pd.isna(row[field]) or str(row[field]).strip() == '' or str(row[field]).strip() == 'nan':
                         row_errors.append(f"Отсутствует '{field}'")
                 errors.append("; ".join(row_errors) if row_errors else None)
 

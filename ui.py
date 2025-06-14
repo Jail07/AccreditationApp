@@ -2,8 +2,11 @@
 import inspect
 import os
 import sys
+
+import numpy as np
 import pandas as pd
 from datetime import datetime, date, timedelta
+from multiprocessing import Pool, cpu_count
 import pytz
 import logging
 import traceback
@@ -12,14 +15,14 @@ from concurrent.futures import ThreadPoolExecutor # Для фоновых зад
 from PyQt5.QtWidgets import (
     QWidget, QVBoxLayout, QHBoxLayout, QLineEdit, QPushButton, QTableWidget,
     QTableWidgetItem, QTextEdit, QLabel, QMessageBox, QApplication, QSplitter,
-    QHeaderView, QAbstractItemView, QStyleFactory, QProgressDialog, QDialog,
-    QFormLayout, QCheckBox, QDialogButtonBox, QTableView, QInputDialog
+    QHeaderView, QAbstractItemView, QDialog,
+    QCheckBox, QDialogButtonBox, QTableView, QInputDialog
 )
-from PyQt5.QtGui import QIcon, QColor, QBrush, QPalette, QFont, QStandardItem, QStandardItemModel
+from PyQt5.QtGui import QIcon, QColor, QBrush, QStandardItem, QStandardItemModel
 from PyQt5.QtCore import Qt, QRunnable, QThreadPool, pyqtSignal, QObject, pyqtSlot, QThread
 
 from config import get_logger
-from data_processing import DataProcessor
+from data_processing import DataProcessor, process_data_chunk
 from file_manager import FileManager
 from database_manager import DatabaseManager
 
@@ -562,18 +565,17 @@ class AccreditationApp(QWidget):
     # --- Методы, выполняемые в фоновых потоках ---
 
     def _task_load_and_process_file(self, signals):
-        """Worker: Загружает, очищает, валидирует и проверяет файл."""
+        """Worker: Загружает, параллельно обрабатывает и проверяет файл."""
         signals.log.emit("Запрос выбора файла...", "INFO")
         file_name = self.file_manager.open_file_dialog()
         if not file_name:
             return "Загрузка файла отменена пользователем."
 
-        signals.log.emit(f"Загрузка данных из {os.path.basename(file_name)}...", "INFO")
         try:
+            # --- Шаг 1: Загрузка и предварительная очистка пустых строк ---
+            signals.log.emit(f"Загрузка данных из {os.path.basename(file_name)}...", "INFO")
             self.df_loaded = pd.read_excel(file_name, engine='openpyxl')
-            signals.log.emit(f"Загружено {len(self.df_loaded)} строк (до очистки пустых).", "INFO")
 
-            # --- ДОБАВЛЕНО: Удаление пустых строк ---
             initial_rows = len(self.df_loaded)
             cols_to_check = self.df_loaded.columns.tolist()
             if cols_to_check and ('№ п/п' in cols_to_check[0] or 'пп' in cols_to_check[0].lower()):
@@ -600,54 +602,25 @@ class AccreditationApp(QWidget):
             return None
 
         signals.progress.emit(10)
-        # 1. Очистка данных
-        signals.log.emit("Очистка данных...", "INFO")
-        df_cleaned = self.processor.clean_dataframe(self.df_loaded)
-        # print(df_cleaned)
-        # print(type(df_cleaned))
-        # --- ОТЛАДКА ---
-        if not isinstance(df_cleaned, pd.DataFrame):
-            signals.log.emit(f"КРИТИЧЕСКАЯ ОШИБКА: clean_dataframe вернул {type(df_cleaned)}", "ERROR")
-            return None  # Прерываем выполнение
-        signals.log.emit(f"Тип после clean_dataframe: {type(df_cleaned)}", "DEBUG")
-        # ---------------
-        signals.progress.emit(30)
 
-        # 2. Валидация обязательных полей
-        signals.log.emit("Валидация обязательных полей...", "INFO")
-        df_validated = self.processor.validate_data(df_cleaned)
-        # --- ОТЛАДКА ---
-        if not isinstance(df_validated, pd.DataFrame):
-            signals.log.emit(f"КРИТИЧЕСКАЯ ОШИБКА: validate_data вернул {type(df_validated)}", "ERROR")
-            return None  # Прерываем выполнение
-        signals.log.emit(f"Тип после validate_data: {type(df_validated)}", "DEBUG")
-        # ---------------
-        signals.progress.emit(40)
+        try:
+            # --- Шаг 2: Многопроцессорная обработка (очистка и валидация) ---
+            signals.log.emit("Начало многопроцессорной обработки данных...", "INFO")
+            num_processes = max(1, cpu_count() - 1)
+            df_chunks = np.array_split(self.df_loaded, num_processes)
 
-        # 2.5 Валидация дат
-        signals.log.emit("Валидация дат рождения...", "INFO")
-        # --- ОТЛАДКА ---
-        signals.log.emit(f"Тип ПЕРЕД validate_dates: {type(df_validated)}", "DEBUG")
-        # ---------------
-        date_errors = self.processor.validate_dates(df_validated, min_year=1900)  # Используем проверенный df_validated
-        for idx, error_msg in date_errors.items():
-            # Добавляем ошибку даты к существующим ошибкам валидации
-            current_errors = df_validated.loc[idx, 'Validation_Errors']
-            if pd.isna(current_errors):
-                df_validated.loc[idx, 'Validation_Errors'] = error_msg
-            else:
-                df_validated.loc[idx, 'Validation_Errors'] += f"; {error_msg}"
-        signals.progress.emit(45)
+            with Pool(processes=num_processes) as pool:
+                processed_chunks = pool.map(process_data_chunk, df_chunks)
 
-        # 3. Проверка на необычные имена/фамилии
-        signals.log.emit("Поиск необычных имен/фамилий...", "INFO")
-        # --- ОТЛАДКА ---
-        signals.log.emit(f"Тип ПЕРЕД detect_unusual_names: {type(df_validated)}", "DEBUG")
-        # ---------------
-        suspicious_indices = self.processor.detect_unusual_names(df_validated)  # Используем тот же df_validated
+            df_validated = pd.concat(processed_chunks, ignore_index=True)
+            signals.log.emit("Многопроцессорная обработка завершена.", "INFO")
+            signals.progress.emit(60)
+        except Exception as e:
+            self.logger.exception("Ошибка во время многопроцессорной обработки.")
+            return f"Ошибка обработки: {e}"
+
+        suspicious_indices = df_validated[df_validated['Name_Check_Required'] == True].index.tolist()
         confirmed_indices = set(df_validated.index)
-
-        # Сбрасываем предыдущие подтверждения
         self.user_confirmations.clear()
 
         if suspicious_indices:
@@ -667,83 +640,75 @@ class AccreditationApp(QWidget):
                      signals.log.emit(f"Строка {idx+1} не подтверждена пользователем и будет пропущена.", "WARNING")
                      confirmed_indices.discard(idx) # Удаляем неподтвержденные
                      # Добавляем ошибку валидации
-                     df_validated.loc[idx, 'Validation_Errors'] = (df_validated.loc[idx, 'Validation_Errors'] or "") + "; НЕ ПОДТВЕРЖДЕНО ПОЛЬЗОВАТЕЛЕМ"
+                     df_validated.loc[idx, 'Validation_Errors'] = (df_validated.loc[idx, 'Validation_Errors'] or "") + "ФИО не подтвержден"
 
-        df_to_process = df_validated[df_validated.index.isin(confirmed_indices) & df_validated['Validation_Errors'].isna()].copy()
-        df_invalid = df_validated[~df_validated.index.isin(confirmed_indices) | df_validated['Validation_Errors'].notna()].copy()
+        validation_errors_mask = df_validated['Validation_Errors'].notna()
+        df_to_process = df_validated[~validation_errors_mask].copy()
+        df_invalid = df_validated[validation_errors_mask].copy()
 
-        signals.log.emit(f"Проверку прошли {len(df_to_process)} строк. Отклонено/не подтверждено: {len(df_invalid)}.", "INFO")
+        signals.log.emit(f"Проверку прошли {len(df_to_process)} строк. Отклонено/не подтверждено: {len(df_invalid)}.",
+                         "INFO")
+
         signals.progress.emit(60)
 
-        # 4. Проверка статуса в БД
-        signals.log.emit("Проверка статусов сотрудников в БД...", "INFO")
-        statuses_db = []
-        person_ids = []
-        processed_count = 0
-        total_to_process = len(df_to_process)
+        # --- Шаг 5: Проверка статуса в БД (только для прошедших валидацию) ---
+        if not df_to_process.empty:
+            signals.log.emit("Проверка статусов сотрудников в БД...", "INFO")
+            statuses_db, person_ids = [], []
+            for _, row in df_to_process.iterrows():
+                # Данные передаются в get_person_status в том же виде, в каком они были обработаны.
+                # Это должно решить проблему с неправильным определением статуса.
+                status_info = self.db_manager.get_person_status(
+                    row.get('Фамилия'), row.get('Имя'), row.get('Отчество'), row.get('Дата рождения')
+                )
+                statuses_db.append(status_info['status'])
+                person_ids.append(status_info['person_id'])
+            df_to_process['Статус БД'] = statuses_db
+            df_to_process['ID'] = person_ids
 
-        for index, row in df_to_process.iterrows():
-            status_info = self.db_manager.get_person_status(
-                row.get('Фамилия'), row.get('Имя'), row.get('Отчество'), row.get('Дата рождения')
-            )
-            statuses_db.append(status_info['status'])
-            person_ids.append(status_info['person_id'])
-            processed_count += 1
-            if total_to_process > 0:
-                 signals.progress.emit(60 + int(40 * processed_count / total_to_process))
+        signals.progress.emit(90)
 
+        # --- Шаг 6: Финальное распределение по статусам и отчетам ---
+        df_to_process['Статус Проверки'] = ''
+        df_for_td_list = []
 
-        df_to_process['Статус БД'] = statuses_db
-        df_to_process['ID'] = person_ids # Добавляем ID из БД
-
-        # 5. Формирование отчетов и списка для TD
-        signals.log.emit("Формирование отчетов...", "INFO")
+        # Инициализируем словарь reports со ВСЕМИ возможными ключами
         reports = {
-            'ГПХ_Ранее_отведенные': pd.DataFrame(),
-            'Подрядчики_Ранее_отведенные': pd.DataFrame(),
-            'ГПХ_Ранее_проверенные': pd.DataFrame(),
-            'Подрядчики_Ранее_проверенные': pd.DataFrame(),
             'ГПХ_На_проверку': pd.DataFrame(),
             'Подрядчики_На_проверку': pd.DataFrame(),
-            'Ошибки_и_Отклоненные': df_invalid # Добавляем отчет об ошибках
+            'ГПХ_Ранее_проверенные': pd.DataFrame(),
+            'Подрядчики_Ранее_проверенные': pd.DataFrame(),
+            'ГПХ_Ранее_отведенные': pd.DataFrame(),
+            'Подрядчики_Ранее_отведенные': pd.DataFrame(),
+            'Ошибки_ГПХ': df_invalid[df_invalid['Организация'].str.contains('ГПХ', case=False, na=False)],
+            'Ошибки_Подрядчики': df_invalid[~df_invalid['Организация'].str.contains('ГПХ', case=False, na=False)]
         }
-        df_to_process['Статус Проверки'] = '' # Новая колонка для итогового статуса
-
-        df_for_td_list = []
 
         for index, row in df_to_process.iterrows():
             org = str(row.get('Организация', '')).upper()
             status_db = row['Статус БД']
             is_gph = 'ГПХ' in org
 
-            report_key = None
-            status_check = ""
-
             if status_db == 'BLACKLISTED':
-                report_key = 'ГПХ_Ранее_отведенные' if is_gph else 'Подрядчики_Ранее_отведенные'
                 status_check = "Ранее отведен"
+                report_key = 'ГПХ_Ранее_отведенные' if is_gph else 'Подрядчики_Ранее_отведенные'
             elif status_db == 'ACTIVE':
-                report_key = 'ГПХ_Ранее_проверенные' if is_gph else 'Подрядчики_Ранее_проверенные'
                 status_check = "Активен"
-            elif status_db in ['EXPIRED', 'NOT_FOUND']:
-                 report_key = 'ГПХ_На_проверку' if is_gph else 'Подрядчики_На_проверку'
-                 status_check = "На проверку"
-                 # Собираем данные для добавления в TD
-                 row_for_td = row.to_dict()
-                 row_for_td['status'] = status_check # Добавляем статус проверки
-                 df_for_td_list.append(row_for_td)
+                report_key = 'ГПХ_Ранее_проверенные' if is_gph else 'Подрядчики_Ранее_проверенные'
+            else:  # NOT_FOUND, EXPIRED, и т.д.
+                status_check = "На проверку"
+                report_key = 'ГПХ_На_проверку' if is_gph else 'Подрядчики_На_проверку'
+                df_for_td_list.append(row.to_dict())
 
             df_to_process.loc[index, 'Статус Проверки'] = status_check
-            if report_key:
-                 # Добавляем строку в соответствующий отчет
-                 # Используем .loc[index:index] для сохранения структуры DataFrame
-                 reports[report_key] = pd.concat([reports[report_key], df_to_process.loc[index:index]], ignore_index=True)
-
+            reports[report_key] = pd.concat([reports[report_key], row.to_frame().T], ignore_index=True)
 
         df_for_td = pd.DataFrame(df_for_td_list)
 
-        # Объединяем результаты обработки с невалидными строками для отображения в таблице
+        # --- Шаг 7: Подготовка к возврату результата ---
         df_display = pd.concat([df_to_process, df_invalid], ignore_index=True).fillna('')
+        if 'Validation_Errors' in df_display.columns:
+            df_display.rename(columns={'Validation_Errors': 'Ошибки Валидации'}, inplace=True)
         # Убедимся, что все нужные колонки есть
         all_cols = [
             'ID', 'Фамилия', 'Имя', 'Отчество', 'Дата рождения', 'Место рождения',
@@ -754,12 +719,21 @@ class AccreditationApp(QWidget):
         for col in all_cols:
              if col not in df_display.columns:
                  df_display[col] = ''
-        df_display = df_display[all_cols] # Упорядочиваем колонки
-
+        df_display = df_display[all_cols]
+        result_dict = {
+            'processed_df': df_display,
+            'to_td': df_for_td,
+            'reports': reports,
+            'stats': {
+                'passed': len(df_for_td),
+                'rejected': len(df_invalid),
+                'suspicious': len(suspicious_indices)
+            }
+        }
 
         signals.progress.emit(100)
         signals.log.emit("Обработка файла завершена.", "INFO")
-        return {'processed_df': df_display, 'reports': reports, 'to_td': df_for_td}
+        return result_dict
 
     # ui.py (полная функция _task_search_people)
 
@@ -1084,6 +1058,7 @@ class AccreditationApp(QWidget):
             name = row.get('Имя')
             middle_name = row.get('Отчество')
             birth_date = row.get('Дата рождения')
+            custom_date = row.get('Дата проверки')
 
             # Проверяем минимально необходимые данные
             if not surname or not name or not birth_date:
@@ -1094,7 +1069,7 @@ class AccreditationApp(QWidget):
 
             # Пытаемся активировать существующего сотрудника 'в ожидании'
             success, message, person_id = self.db_manager.activate_person_by_details(
-                surname, name, middle_name, birth_date
+                surname, name, middle_name, birth_date, custom_date
             )
             signals.log.emit(f"Строка {index + 1}: {success} {message} ID: {person_id}",
                              "WARNING")
@@ -1121,12 +1096,10 @@ class AccreditationApp(QWidget):
                     'Должность': row.get('Должность', 'Не указана'),
                     'Примечания': row.get('Примечания', '')  # И примечания, если есть в файле
                 }
-                # print(1)
                 signals.request_new_employee_action.emit(request_data, index)
                 # Ждем ответа пользователя
                 while index not in self.new_employee_actions:
                     QThread.msleep(100)
-                # print(2)
                 action = self.new_employee_actions.get(index, 'skip')
 
                 if action == 'activate':
@@ -1135,13 +1108,18 @@ class AccreditationApp(QWidget):
                     new_person_id = self.db_manager.add_to_accrtable(request_data, status='аккредитован')
                     if new_person_id:
                         # Сразу обновляем mainTable для нового активного
+
                         now_tz = datetime.now(self.timezone)
-                        end_accr = now_tz + timedelta(days=180)
+                        if custom_date is not None and not pd.isna(custom_date):
+                            start_date = custom_date + timedelta(days=1)
+                        else:
+                            start_date = now_tz
+                        end_accr = start_date + timedelta(days=180)
                         query_main = """
                             INSERT INTO mainTable (person_id, start_accr, end_accr, black_list, last_checked)
                             VALUES (%s, %s, %s, FALSE, %s);
                          """
-                        self.db_manager.execute_query(query_main, (new_person_id, now_tz, end_accr, now_tz),
+                        self.db_manager.execute_query(query_main, (new_person_id, start_date, end_accr, now_tz),
                                                       commit=True)
                         self.db_manager.log_transaction(new_person_id, 'Добавлен и Активирован (файл)')
                         activated_count += 1

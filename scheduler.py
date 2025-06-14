@@ -98,35 +98,53 @@ class Scheduler:
         df_to_check = pd.DataFrame(employees_in_td)
         self.logger.info(f"Собрано {len(df_to_check)} записей из TD.")
 
-        # --- Шаг 1: Генерация файла ---
-        # ... (код генерации df_report как в предыдущем исправлении) ...
-        cols_to_keep = ['surname', 'name', 'middle_name', 'birth_date', 'birth_place',
-                        'registration', 'organization', 'position', 'notes', 'status'] # Добавили notes
-        df_report = df_to_check[[col for col in cols_to_keep if col in df_to_check.columns]].copy()
-        rename_map = {
-             'surname': 'Фамилия', 'name': 'Имя', 'middle_name': 'Отчество',
-             'birth_date': 'Дата рождения', 'birth_place': 'Место рождения',
-             'registration': 'Адрес регистрации', 'organization': 'Организация',
-             'position': 'Должность', 'notes': 'Примечания', # Добавили notes
-             'status': 'Статус проверки (из файла)'
-        }
-        df_report.rename(columns=rename_map, inplace=True)
-        if 'Дата рождения' in df_report.columns:
-             df_report['Дата рождения'] = pd.to_datetime(df_report['Дата рождения']).dt.strftime('%d.%m.%Y')
+        # --- Шаг 1: Разделение на ГПХ и Остальных ---
+        # Ищем 'ГПХ' в названии организации, регистр не важен. na=False - чтобы NaN не вызывали ошибок.
+        df_gph = df_to_check[df_to_check['organization'].str.contains('ГПХ', case=False, na=False)].copy()
+        df_other = df_to_check[~df_to_check['organization'].str.contains('ГПХ', case=False, na=False)].copy()
 
-        # --- ДОБАВЛЕНО: Столбец для проверки ---
-        df_report['Результат проверки'] = ''
-        df_report['Примечания проверяющего'] = ''
-        # ------------------------------------
+        # --- Шаг 2: Генерация файлов ---
+        files_generated = True
 
-        filename_prefix = "Еженедельный_список_на_проверку"
-        saved_path = self.file_manager.generate_file_scheduler(df_report, filename_prefix)
+        # Функция-помощник для генерации отчета
+        def create_and_save_report(df, file_prefix, report_type):
+            if df.empty:
+                self.logger.info(f"Нет сотрудников типа '{report_type}' для генерации файла.")
+                return True  # Считаем успехом, если данных просто нет
 
-        if not saved_path:
-            self.logger.error("Не удалось сохранить еженедельный файл 'На проверку'. Перенос в AccrTable и очистка TD НЕ будут выполнены.")
-            return # Прерываем операцию, если файл не сохранен
+                cols_to_keep = ['surname', 'name', 'middle_name', 'birth_date', 'organization', 'position', 'notes']
+                df_report = df[[col for col in cols_to_keep if col in df.columns]].copy()
+                rename_map = {
+                     'surname': 'Фамилия', 'name': 'Имя', 'middle_name': 'Отчество',
+                     'birth_date': 'Дата рождения', 'birth_place': 'Место рождения',
+                     'registration': 'Адрес регистрации', 'organization': 'Организация',
+                     'position': 'Должность', 'notes': 'Примечания', # Добавили notes
+                     'status': 'Статус проверки (из файла)'
+                }
+                df_report.rename(columns=rename_map, inplace=True)
+                if 'Дата рождения' in df_report.columns:
+                     df_report['Дата рождения'] = pd.to_datetime(df_report['Дата рождения']).dt.strftime('%d.%m.%Y')
 
-        self.logger.info(f"Еженедельный файл 'На проверку' сохранен: {saved_path}")
+                # --- ДОБАВЛЕНО: Столбец для проверки ---
+                df_report['Результат проверки'] = ''
+                df_report['Примечания проверяющего'] = ''
+                # ------------------------------------
+
+                saved_path = self.file_manager.generate_file_scheduler(df_report, file_prefix)
+                if not saved_path:
+                    self.logger.error(f"Не удалось сохранить файл '{file_prefix}'.")
+                    return False
+                return True
+
+        if not create_and_save_report(df_gph, "Еженедельный_список_ГПХ", "ГПХ"):
+            files_generated = False
+        if not create_and_save_report(df_other, "Еженедельный_список_Подрядчики", "Подрядчики/Остальные"):
+            files_generated = False
+
+        if not files_generated:
+            self.logger.error(
+                "Ошибка при создании одного или нескольких файлов. Перенос в AccrTable и очистка TD НЕ будут выполнены.")
+            return
 
         # --- Шаг 2: Добавление в AccrTable ---
         added_to_accr_count = 0

@@ -4,7 +4,6 @@ ClientApp.spec
 AccrApp.spec
 /get-docker.sh
 /icon.ico
-/icon.png
 /deploy.sh
 /Test
 /dist

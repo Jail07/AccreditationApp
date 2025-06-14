@@ -211,10 +211,15 @@ class DatabaseManager:
         if not all(field in data and pd.notna(data[field]) for field in required_fields_from_data):
             self.logger.warning(f"Пропущена запись в TD из-за отсутствия обязательных полей в data: {data}")
             return None
+        person_id_accr = self.find_person_in_accrtable(data['Фамилия'], data['Имя'], data['Отчество'], data['Дата рождения'])
         person_id_td = self.find_person_in_td(data['Фамилия'], data['Имя'], data['Отчество'], data['Дата рождения'])
-        if person_id_td is not None:
+        if person_id_td:
             self.logger.warning(f"Такой сотрудник уже есть в TD")
             return person_id_td
+        if person_id_accr:
+            self.logger.warning(f"Такой сотрудник уже есть в Accr")
+            return person_id_accr
+
 
         # --- ИЗМЕНЕНИЕ: Переход на %s плейсхолдеры ---
         query = """
@@ -307,12 +312,19 @@ class DatabaseManager:
         Проверяет статус человека в mainTable (активность, черный список).
         Возвращает словарь {'status': 'BLACKLISTED'|'ACTIVE'|'EXPIRED'|'NOT_FOUND', 'person_id': id | None}.
         """
-        person_id = self.find_person_in_accrtable(surname, name, middle_name, birth_date)
-        if not person_id:
+        person_id_accr = self.find_person_in_accrtable(surname, name, middle_name, birth_date)
+        person_id_td = self.find_person_in_td(surname, name, middle_name, birth_date)
+        if not person_id_accr and not person_id_td:
             return {'status': 'NOT_FOUND', 'person_id': None}
-        person_id = self.find_person_in_td(surname, name, middle_name, birth_date)
-        if not person_id:
-            return {'status': 'NOT_FOUND', 'person_id': None}
+        elif person_id_td and not person_id_accr:
+            person_id = person_id_td
+        elif person_id_accr and not person_id_td:
+            person_id = person_id_accr
+        else:
+            query_delete = "DELETE FROM TD WHERE id = %s"
+            self.execute_query(query_delete, (person_id_td,), commit=True)
+            person_id = person_id_accr
+
 
         now_tz = datetime.now(self.timezone)
         query = """
@@ -764,7 +776,7 @@ class DatabaseManager:
             return len(expired_ids)
         return 0
 
-    def activate_person_by_details(self, surname, name, middle_name, birth_date):
+    def activate_person_by_details(self, surname, name, middle_name, birth_date, custom_start_date=None):
         """
         Активирует сотрудника (статус 'аккредитован', даты в mainTable),
         если он найден в AccrTable и имеет статус 'в ожидании'.
@@ -796,8 +808,19 @@ class DatabaseManager:
         # --- Выполняем активацию ---
         self.logger.info(f"Активация сотрудника ID {person_id} ({surname} {name})...")
         new_status = 'аккредитован'
+        # --- ИЗМЕНЕНИЕ: Расчет дат аккредитации ---
+        if custom_start_date and isinstance(custom_start_date, (date, datetime)):
+            # Если пришла дата, делаем ее "aware" (с часовым поясом)
+            if isinstance(custom_start_date, date):
+                # Превращаем date в datetime
+                custom_start_date = datetime.combine(custom_start_date, datetime.min.time())
+            start_accr = self.timezone.localize(custom_start_date)  # Устанавливаем наш часовой пояс
+            self.logger.info(
+                f"Для ID {person_id} будет использована указанная дата начала аккредитации: {start_accr.strftime('%Y-%m-%d')}")
+        else:
+            start_accr = datetime.now(self.timezone)  # Дата по умолчанию - сейчас
         now_tz = datetime.now(self.timezone)
-        end_accr = now_tz + timedelta(days=180)
+        end_accr = start_accr + timedelta(days=180)
 
         # Используем одну транзакцию для обоих обновлений
         conn = None
@@ -820,13 +843,13 @@ class DatabaseManager:
                                            black_list = FALSE,
                                            last_checked = %s
                                        WHERE person_id = %s;
-                                       """, (now_tz, end_accr, now_tz, person_id))  # Условие по person_id
+                                       """, (start_accr, end_accr, now_tz, person_id))  # Условие по person_id
                 else:
                     # Записи нет, ВСТАВЛЯЕМ новую
                     cursor.execute("""
                                        INSERT INTO mainTable (person_id, start_accr, end_accr, black_list, last_checked)
                                        VALUES (%s, %s, %s, FALSE, %s);
-                                       """, (person_id, now_tz, end_accr, now_tz))
+                                       """, (person_id, start_accr, end_accr, now_tz))
             conn.commit()
             self.logger.info(f"Сотрудник ID {person_id} успешно активирован. Аккредитация до {end_accr.strftime('%Y-%m-%d')}.")
             self.log_transaction(person_id, 'Статус Активен (файл)', f'Аккредитация до {end_accr.strftime("%Y-%m-%d")}')
